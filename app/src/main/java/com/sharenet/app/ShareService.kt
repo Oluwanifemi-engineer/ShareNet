@@ -254,6 +254,18 @@ class ShareService : Service() {
     private fun tick() {
         wifiDirect?.refreshClients()
 
+        // Live traffic counters for the UI (bytes are cumulative since start).
+        val snapshot = stats.snapshot()
+        ShareController.dispatch(
+            ShareEvent.StatsUpdated(
+                TrafficStats(
+                    bytesUp = snapshot.bytesFromClients,
+                    bytesDown = snapshot.bytesToClients,
+                    activeConnections = snapshot.activeConnections,
+                ),
+            ),
+        )
+
         val now = NetworkInfo.describe(this)
         val display = now ?: getString(R.string.upstream_none)
         if (display != lastUpstream) {
@@ -325,9 +337,14 @@ class ShareService : Service() {
         val pinLine = state.info.pin?.let {
             getString(R.string.notif_pin_line, it)
         } ?: ""
+        val clients = resources.getQuantityString(
+            R.plurals.notif_clients,
+            state.info.clients,
+            state.info.clients,
+        )
         val text = getString(
             R.string.notif_text_sharing,
-            state.info.clients,
+            clients,
             state.info.proxyAddress,
         ) + relayLine + pinLine
         val notification = buildNotification(

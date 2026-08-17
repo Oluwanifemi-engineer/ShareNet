@@ -20,6 +20,13 @@ sealed interface ShareState {
     data class Failed(val message: String) : ShareState
 }
 
+/** Live byte counters surfaced to the UI (pure data, no Android imports). */
+data class TrafficStats(
+    val bytesUp: Long,
+    val bytesDown: Long,
+    val activeConnections: Int,
+)
+
 /** What we know about the hotspot before it is fully up. */
 data class PendingInfo(
     val ssid: String,
@@ -39,6 +46,8 @@ data class ShareInfo(
     val udpRelayPort: Int? = null,
     /** Pairing PIN a ShareNet client must enter to use tunnel mode. */
     val pin: String? = null,
+    /** Live traffic counters, refreshed by the service tick. */
+    val stats: TrafficStats? = null,
 ) {
     val proxyAddress: String get() = "$proxyHost:$proxyPort"
 }
@@ -51,6 +60,7 @@ sealed interface ShareEvent {
     data class ProxyStarted(val host: String, val port: Int) : ShareEvent
     data class RelayStarted(val port: Int) : ShareEvent
     data class ClientsChanged(val count: Int) : ShareEvent
+    data class StatsUpdated(val stats: TrafficStats) : ShareEvent
     data object StopRequested : ShareEvent
     data object Stopped : ShareEvent
     data class Failed(val message: String) : ShareEvent
@@ -114,6 +124,11 @@ object ShareReducer {
 
         is ShareEvent.ClientsChanged -> when (state) {
             is ShareState.Sharing -> state.copy(info = state.info.copy(clients = event.count))
+            else -> state
+        }
+
+        is ShareEvent.StatsUpdated -> when (state) {
+            is ShareState.Sharing -> state.copy(info = state.info.copy(stats = event.stats))
             else -> state
         }
 

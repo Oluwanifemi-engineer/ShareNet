@@ -94,10 +94,4 @@
         <item name="strokeWidth">1dp</item>
         <item name="strokeColor">@color/md_outline_variant</item>
     </style>
-
-    <style name="Widget.ShareNet.Card.Filled" parent="Widget.Material3.CardView.Filled">
-        <item name="cardBackgroundColor">@color/md_surface_variant</item>
-        <item name="cardCornerRadius">24dp</item>
-        <item name="cardElevation">0dp</item>
-    </style>
 </resources>

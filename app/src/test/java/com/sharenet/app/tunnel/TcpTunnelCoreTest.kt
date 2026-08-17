@@ -253,15 +253,58 @@ class TcpTunnelCoreTest {
     }
 
     @Test
+    fun `retransmissions back off exponentially`() {
+        val core = newCore()
+        val (connId, _) = handshake(core)
+        outgoing.clear()
+
+        core.onRemoteData(connId, "stuck".toByteArray())
+        assertEquals(1, outgoing.size)
+
+        // t=400: first retransmission (RTO 400).
+        fakeNow += 400
+        core.tick(fakeNow)
+        assertEquals(2, outgoing.size)
+
+        // t=800: RTO has doubled to 800 — only 400ms passed, nothing yet.
+        fakeNow += 400
+        core.tick(fakeNow)
+        assertEquals(2, outgoing.size)
+
+        // t=1600: 1200ms >= 800ms RTO — second retransmission.
+        fakeNow += 800
+        core.tick(fakeNow)
+        assertEquals(3, outgoing.size)
+
+        // t=2400: RTO now 1600 — only 800ms passed, nothing yet.
+        fakeNow += 800
+        core.tick(fakeNow)
+        assertEquals(3, outgoing.size)
+
+        // t=4000: 2400ms >= 1600ms — third retransmission.
+        fakeNow += 1600
+        core.tick(fakeNow)
+        assertEquals(4, outgoing.size)
+        assertTrue(core.retransmits >= 3)
+    }
+
+    @Test
     fun `resets after too many retries`() {
         val core = newCore()
         val (connId, _) = handshake(core)
         outgoing.clear()
         core.onRemoteData(connId, "stuck".toByteArray())
-        for (i in 0..8) {
+        var resetSeen = false
+        // With backoff the retries spread out; tick long enough to exhaust them.
+        for (i in 0..200) {
             fakeNow += 400
             core.tick(fakeNow)
+            if (core.connsActive == 0L) {
+                resetSeen = true
+                break
+            }
         }
+        assertTrue("connection was never reset", resetSeen)
         val last = parseTcp(outgoing.last())
         assertTrue((last.flags and TcpFlags.RST) != 0)
         assertEquals(0, core.connsActive)

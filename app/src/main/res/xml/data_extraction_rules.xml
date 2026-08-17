@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ShareNet keeps nothing worth backing up, and a restore could re-route
+     traffic unexpectedly: exclude everything from cloud backup and device
+     transfer (Android 12+; allowBackup=false covers older versions). -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" path="." />
+    </device-transfer>
+</data-extraction-rules>

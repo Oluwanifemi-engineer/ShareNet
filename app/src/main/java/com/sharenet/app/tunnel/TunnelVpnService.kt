@@ -17,6 +17,7 @@ import android.os.ParcelFileDescriptor
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
 import com.sharenet.app.MainActivity
 import com.sharenet.app.R
 import com.sharenet.app.proxy.Ipv4Codec
@@ -274,7 +275,7 @@ class TunnelVpnService : VpnService() {
         val message = when (reason) {
             DisconnectReason.AUTH_REJECTED -> {
                 // The stored PIN is wrong; drop it so the user re-enters it.
-                prefs(this).edit().remove(KEY_PIN).apply()
+                prefs(this).edit { remove(KEY_PIN) }
                 getString(R.string.tunnel_error_auth)
             }
             DisconnectReason.CONTROL_LOST -> getString(R.string.tunnel_error_lost)

@@ -294,7 +294,11 @@ class TcpTunnelCore(
                 (conn.state == State.FIN_SENT && conn.ourFinSeq >= 0 &&
                     conn.ackedSeq < conn.ourFinSeq + 1)
             if (!unacked) continue
-            if (nowMs - conn.lastSendMs < RTO_MS) continue
+            // Exponential backoff: each retransmission doubles the wait (up to
+            // a cap), so a genuinely dead link does not hammer the radio and
+            // a briefly congested one is given room to recover.
+            val rto = minOf(RTO_MS shl minOf(conn.retries, MAX_RTO_SHIFT), MAX_RTO_MS)
+            if (nowMs - conn.lastSendMs < rto) continue
             conn.retries++
             if (conn.retries > MAX_RETRIES) {
                 sendReset(conn)
@@ -503,6 +507,8 @@ class TcpTunnelCore(
         private const val MAX_CONNECTIONS = 64
         private const val MAX_PENDING_SEGMENTS = 64
         private const val RTO_MS = 400L
+        private const val MAX_RTO_MS = 10_000L
+        private const val MAX_RTO_SHIFT = 5 // 400ms * 2^5 = 12.8s, capped above
         private const val MAX_RETRIES = 6
     }
 }

@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Intentionally empty: allowBackup="false" is the primary control; this
+     file satisfies lint on API 19–30 where fullBackupContent takes precedence. -->
+<full-backup-content />

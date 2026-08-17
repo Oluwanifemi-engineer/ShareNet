@@ -1,8 +1,8 @@
 import java.util.Properties
 
 plugins {
-    id("com.android.application")
-    id("org.jetbrains.kotlin.android")
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.android)
 }
 
 // Release signing is read from keystore.properties (gitignored). Without it
@@ -23,6 +23,7 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
@@ -58,6 +59,7 @@ android {
 
     buildFeatures {
         viewBinding = true
+        buildConfig = true // exposes BuildConfig.VERSION_NAME to the About screen
     }
 
     testOptions {
@@ -66,11 +68,16 @@ android {
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.13.0")
-    implementation("androidx.appcompat:appcompat:1.6.1")
-    implementation("com.google.android.material:material:1.12.0")
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.appcompat)
+    implementation(libs.material)
+    implementation(libs.zxing.core) // QR rendering for the join-info code
 
     // JVM unit tests only — the HTTP proxy and state machine are pure Kotlin
     // with zero Android imports, so they run fast on the plain JVM.
-    testImplementation("junit:junit:4.13.2")
+    testImplementation(libs.junit)
+
+    // Instrumented smoke test (device/emulator): `./gradlew connectedDebugAndroidTest`.
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.core)
 }

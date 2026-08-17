@@ -4,12 +4,21 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Color
 import android.os.Bundle
 import android.provider.Settings
 import android.view.View
 import android.widget.Toast
+import androidx.core.graphics.createBitmap
+import androidx.core.graphics.set
+import java.util.Locale
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.qrcode.QRCodeWriter
 import com.sharenet.app.databinding.ActivityMainBinding
 import com.sharenet.app.tunnel.TunnelController
 import com.sharenet.app.tunnel.TunnelVpnService
@@ -32,6 +41,8 @@ class MainActivity : AppCompatActivity() {
         binding.toggleButton.setOnClickListener { onToggle() }
         binding.clientToggleButton.setOnClickListener { onClientToggle() }
         binding.osSettingsButton.setOnClickListener { openHotspotSettings() }
+        binding.privacyButton.setOnClickListener { showPrivacyDialog() }
+        binding.aboutVersion.text = getString(R.string.about_version, BuildConfig.VERSION_NAME)
 
         binding.copySsidButton.setOnClickListener {
             copyToClipboard(binding.ssidValue.text.toString())
@@ -132,6 +143,7 @@ class MainActivity : AppCompatActivity() {
         val hero = binding.heroStatusText
         val upstream = binding.upstreamText
         val clients = binding.clientsText
+        val statsText = binding.statsText
         val details = binding.shareDetailsCard
         val toggle = binding.toggleButton
         val radar = binding.statusRadar
@@ -143,6 +155,7 @@ class MainActivity : AppCompatActivity() {
                 hero.setTextColor(ContextCompat.getColor(this, R.color.md_on_surface))
                 upstream.text = describeUpstream(null)
                 clients.text = ""
+                statsText.visibility = View.GONE
                 details.visibility = View.GONE
                 toggle.setText(R.string.action_start)
                 toggle.isEnabled = true
@@ -155,6 +168,7 @@ class MainActivity : AppCompatActivity() {
                 upstream.text = state.pending?.upstream?.let(::describeUpstream)
                     ?: describeUpstream(null)
                 clients.text = ""
+                statsText.visibility = View.GONE
                 details.visibility = View.GONE
                 toggle.setText(R.string.action_stop)
                 toggle.isEnabled = true // allow cancelling while starting
@@ -175,6 +189,17 @@ class MainActivity : AppCompatActivity() {
                     getString(R.string.share_udp_relay_value, info.proxyHost, it)
                 } ?: getString(R.string.share_udp_relay_none)
                 binding.pinValue.text = info.pin ?: ""
+                val stats = info.stats
+                if (stats != null) {
+                    statsText.text = getString(
+                        R.string.stats_value,
+                        formatBytes(stats.bytesUp),
+                        formatBytes(stats.bytesDown),
+                        stats.activeConnections,
+                    )
+                    statsText.visibility = View.VISIBLE
+                }
+                updateQr(info)
                 toggle.setText(R.string.action_stop)
                 toggle.isEnabled = true
             }
@@ -184,6 +209,7 @@ class MainActivity : AppCompatActivity() {
                 hero.setText(R.string.status_stopping)
                 hero.setTextColor(ContextCompat.getColor(this, R.color.md_on_surface_variant))
                 clients.text = ""
+                statsText.visibility = View.GONE
                 details.visibility = View.GONE
                 toggle.isEnabled = false
             }
@@ -194,6 +220,7 @@ class MainActivity : AppCompatActivity() {
                 hero.setTextColor(ContextCompat.getColor(this, R.color.danger))
                 upstream.text = describeUpstream(null)
                 clients.text = ""
+                statsText.visibility = View.GONE
                 details.visibility = View.GONE
                 toggle.setText(R.string.action_start)
                 toggle.isEnabled = true
@@ -249,6 +276,55 @@ class MainActivity : AppCompatActivity() {
         0 -> getString(R.string.clients_zero)
         1 -> getString(R.string.clients_one)
         else -> getString(R.string.clients_many, count)
+    }
+
+    /** QR of the join details, regenerated only when the session changes. */
+    private var lastQrSsid: String? = null
+
+    private fun updateQr(info: ShareInfo) {
+        if (info.ssid == lastQrSsid && binding.qrCode.drawable != null) return
+        lastQrSsid = info.ssid
+        val payload = buildString {
+            appendLine("ShareNet")
+            appendLine("Network: ${info.ssid}")
+            appendLine("Password: ${info.passphrase}")
+            appendLine("Proxy: ${info.proxyAddress}")
+            info.udpRelayPort?.let { appendLine("Games/calls: ${info.proxyHost}:$it") }
+            info.pin?.let { appendLine("PIN: $it") }
+        }
+        binding.qrCode.setImageBitmap(renderQr(payload))
+    }
+
+    private fun renderQr(payload: String): Bitmap? = try {
+        val hints = mapOf(
+            EncodeHintType.CHARACTER_SET to "UTF-8",
+            EncodeHintType.MARGIN to 1,
+        )
+        val size = 384
+        val matrix = QRCodeWriter().encode(payload, BarcodeFormat.QR_CODE, size, size, hints)
+        val bitmap = createBitmap(size, size, Bitmap.Config.RGB_565)
+        for (x in 0 until size) {
+            for (y in 0 until size) {
+                bitmap.set(x, y, if (matrix.get(x, y)) Color.BLACK else Color.WHITE)
+            }
+        }
+        bitmap
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun formatBytes(bytes: Long): String = when {
+        bytes >= 1_048_576 -> String.format(Locale.US, "%.1f MB", bytes / 1_048_576.0)
+        bytes >= 1_024 -> String.format(Locale.US, "%.0f KB", bytes / 1_024.0)
+        else -> "$bytes B"
+    }
+
+    private fun showPrivacyDialog() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.privacy_title)
+            .setMessage(R.string.privacy_body)
+            .setPositiveButton(R.string.privacy_ok, null)
+            .show()
     }
 
     private fun copyToClipboard(value: String) {

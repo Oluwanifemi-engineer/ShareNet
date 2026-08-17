@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
     <string name="app_name">ShareNet</string>
     <string name="tagline">Share your connection with the devices around you.</string>
 
@@ -8,17 +8,15 @@
     <string name="status_starting">Getting things ready…</string>
     <string name="status_sharing">Your connection is live.</string>
     <string name="status_stopping">Wrapping up…</string>
-    <string name="status_failed">%1$s</string>
 
     <!-- Upstream + clients -->
     <string name="upstream_none">No connection to share yet</string>
     <string name="upstream_unknown">Connected to a network</string>
     <string name="upstream_wifi">Sharing your Wi-Fi — %1$s</string>
     <string name="upstream_cellular">Sharing your mobile data</string>
-    <string name="upstream_network">Sharing your connection</string>
     <string name="clients_zero">No devices joined yet</string>
     <string name="clients_one">1 device connected</string>
-    <string name="clients_many">%1$d devices connected</string>
+    <string name="clients_many" tools:ignore="PluralsCandidate">%1$d devices connected</string>
 
     <!-- Share details -->
     <string name="share_section_title">What other devices need</string>
@@ -30,6 +28,8 @@
     <string name="share_udp_relay_none">Not running</string>
     <string name="share_pin_label">Pairing PIN</string>
     <string name="share_pin_hint">For the ShareNet app on another phone (client mode)</string>
+    <string name="qr_hint">Scan this with a phone to grab the network details</string>
+    <string name="stats_value" tools:ignore="PluralsCandidate">↑ %1$s · ↓ %2$s · %3$d active</string>
     <string name="copy">Copy</string>
     <string name="copied">Copied</string>
 
@@ -74,7 +74,11 @@
     <!-- Notifications -->
     <string name="channel_share_name">Sharing status</string>
     <string name="notif_title_sharing">Sharing %1$s</string>
-    <string name="notif_text_sharing">%1$d device(s) connected · %2$s</string>
+    <string name="notif_text_sharing">%1$s · %2$s</string>
+    <plurals name="notif_clients">
+        <item quantity="one">%d device connected</item>
+        <item quantity="other">%d devices connected</item>
+    </plurals>
     <string name="notif_title_starting">Getting ready…</string>
     <string name="notif_action_stop">Stop</string>
     <string name="notif_relay_line"> · relay %1$s:%2$d</string>
@@ -82,8 +86,17 @@
 
     <!-- Errors -->
     <string name="error_permissions">We need permission to find nearby devices and show notifications before sharing.</string>
-    <string name="error_group">The hotspot couldn\'t start. Try turning Wi-Fi off and on, then start again.</string>
     <string name="error_group_lost">The hotspot was closed by the system.</string>
     <string name="error_proxy_bind">The connection couldn\'t be set up on this phone.</string>
     <string name="error_generic">Something went wrong: %1$s</string>
+
+    <!-- About & privacy -->
+    <string name="about_title">About</string>
+    <string name="about_version">Version %1$s</string>
+    <string name="about_line1">No ads. No tracking. No accounts.</string>
+    <string name="about_line2">ShareNet relays traffic on your own phone and keeps nothing.</string>
+    <string name="privacy_button">Privacy policy</string>
+    <string name="privacy_title">ShareNet privacy</string>
+    <string name="privacy_body">ShareNet collects nothing, stores nothing, and sends nothing anywhere except the network traffic you explicitly share through your own phone. It never reads your location; on older Android versions the platform requires a location permission for Wi-Fi Direct, which the app declares but never uses.</string>
+    <string name="privacy_ok">Got it</string>
 </resources>

@@ -71,6 +71,17 @@ ShareService (foreground, type connectedDevice)        TunnelVpnService (client)
 `DIRECT-…` network with the shown password and set their HTTP proxy to
 `192.168.49.1:8080`. Browsing, email, chat, and most apps work.
 
+**Pairing PIN** — every share session generates a random 4-digit PIN (shown
+on screen, in the notification, and in the QR code). A phone running
+ShareNet in client mode must enter this PIN before the host will route its
+traffic, so a stranger on the hotspot cannot use the host's connection
+without consent.
+
+**SSRF/LAN protection** — the proxy, UDP relay, and TCP relay refuse to open
+connections into private/LAN/loopback addresses: a joined device can reach
+public hosts and the hotspot subnet, but can never use the phone to probe its
+own home network or localhost services.
+
 **Client mode (Tier 2, full tunnel)** — a second phone running the app joins
 the host's `DIRECT-…` network, then taps **Connect as client**. Its
 `VpnService` captures *all* of the client's traffic and tunnels it over the
@@ -134,23 +145,27 @@ app/src/main/java/com/sharenet/app/
 └── util/
     ├── Permissions.kt       # NEARBY_WIFI_DEVICES (13+) / location (≤12)
     └── NetworkInfo.kt       # "HomeWiFi (Wi-Fi)" / "Cellular data" + DNS servers
-app/src/test/…               # 47 JVM tests: proxy, relay, DNS, TCP stack, codec, state machines
+app/src/test/…               # 72 JVM tests: proxy, relay, DNS, TCP stack, codec, policy, state machines
+app/src/androidTest/…        # device smoke test (./gradlew connectedDebugAndroidTest)
 scripts/
-    ├── device-test.sh       # single-device host smoke test (adb)
+    ├── device-test.sh       # single-device host smoke test (adb, incl. PIN auth)
     └── two-device-test.sh   # real client-joins-host end-to-end test
 ```
 
 Stack: Kotlin 2.0.21 · AGP 8.10.1 · Gradle 8.12 · minSdk 24 · target/compileSdk 36 ·
-Material 3 + AppCompat + core-ktx.
+Material 3 + AppCompat + core-ktx + ZXing (QR). Versions live in a Gradle
+version catalog (`gradle/libs.versions.toml`); CI runs tests + lint on every
+push (`.github/workflows/ci.yml`).
 
 ## 5. Build & install
 
 ```bash
 cd ~/Projects/ShareNet
 JAVA_HOME=~/jdk21 ./gradlew :app:assembleDebug        # APK in app/build/outputs/apk/debug/
-JAVA_HOME=~/jdk21 ./gradlew :app:testDebugUnitTest    # 47 JVM tests
+JAVA_HOME=~/jdk21 ./gradlew :app:testDebugUnitTest    # 72 JVM tests
 JAVA_HOME=~/jdk21 ./gradlew :app:lintDebug            # lint gate
 JAVA_HOME=~/jdk21 ./gradlew :app:assembleRelease      # signed release (see docs/PLAY-STORE.md)
+JAVA_HOME=~/jdk21 ./gradlew :app:connectedDebugAndroidTest  # device smoke test
 ```
 
 Install `app-debug.apk` on the sharing phone. Android Studio: open the folder
@@ -163,8 +178,8 @@ and run — the SDK/AGP/Gradle versions match the local toolchain.
 2. Open ShareNet → **Start sharing**. Grant the location/nearby permission
    (Android needs it for Wi-Fi Direct discovery; the app never reads location).
 3. Note the **network name** (`DIRECT-…`), **password**, **proxy address**
-   (`192.168.49.1:8080`), and **UDP relay** (`192.168.49.1:5555`) shown on
-   screen and in the notification.
+   (`192.168.49.1:8080`), **UDP relay** (`192.168.49.1:5555`), and **pairing
+   PIN** shown on screen, in the notification, and in a scannable QR code.
 
 **On each client device (plain Tier-1):**
 1. Join the `DIRECT-…` network with the shown password.
@@ -177,7 +192,8 @@ and run — the SDK/AGP/Gradle versions match the local toolchain.
 **On an Android client (adds UDP via tunnel mode):**
 1. Join the host's `DIRECT-…` network in Wi-Fi settings.
 2. Open ShareNet on this phone → in **Client mode**, keep the default host
-   (`192.168.49.1`) and tap **Connect as client**; accept the VPN dialog.
+   (`192.168.49.1`), enter the host's **pairing PIN**, and tap
+   **Connect as client**; accept the VPN dialog.
 3. Set the HTTP proxy as above for TCP. UDP (games, calls) now works too.
 
 Browsing, email, chat, and most apps work immediately. With the client
@@ -205,16 +221,19 @@ tunnel mode still drops is ICMP (ping), which needs a raw socket.
 ## 8. Roadmap
 
 Done so far: host sharing (Tier 1) · full tunnel client mode (UDP + TCP, Tier 2) ·
-DNS for P2P clients · OS Wi-Fi Sharing tip card · premium M3 UI with dark mode.
+DNS for P2P clients · OS Wi-Fi Sharing tip card · premium M3 UI with dark mode ·
+pairing-PIN client auth · SSRF/LAN destination policy · live traffic stats ·
+QR join code · privacy policy (in-app + `docs/PRIVACY-POLICY.md`) · heartbeat
+liveness + sticky service restart · RTO backoff · CI + version catalog.
 
 1. **Play distribution.** Everything is staged in `docs/PLAY-STORE.md`
    (signing, Data Safety answers, permission declarations); the actual upload
-   needs a Play Console account.
+   needs a Play Console account and a hosted privacy-policy URL.
 2. **Two-device automation.** `scripts/two-device-test.sh` drives everything
    that adb can; joining the DIRECT network still needs one tap on the client.
 3. **ICMP relay** for ping through tunnel mode (needs a privileged socket).
-4. **Retransmission tuning** of `TcpTunnelCore` against real lossy links
-   (RTO adaptivity, fast retransmit) once a second device is on hand.
+4. **Fast retransmit** in `TcpTunnelCore` (dup-ACK driven) once a second
+   device is on hand; RTO now backs off exponentially.
 
 ## 9. Verified on hardware (Galaxy A03s, Android 13)
 
@@ -231,7 +250,13 @@ DNS for P2P clients · OS Wi-Fi Sharing tip card · premium M3 UI with dark mode
   P2P interface (clients still get DNS from the system's server).
 - Premium M3 UI verified in dark mode: hero status card with live radar orb,
   credential copy buttons, client mode card, OS-settings deep link.
-- On-device testing caught and fixed: P2P broadcast receivers needing
-  `RECEIVER_EXPORTED` on Android 13, `createGroup` BUSY retries, the resolver
-  picking the upstream `wlan0` address, and a notification format crash
-  (`%d`/String arg order).
+-On-device testing caught and fixed: P2P broadcast receivers needing
+`RECEIVER_EXPORTED` on Android 13, `createGroup` BUSY retries, the resolver
+picking the upstream `wlan0` address, and a notification format crash
+(`%d`/String arg order).
+
+## 10. Privacy
+
+ShareNet collects nothing, stores nothing, and sends nothing anywhere except
+the traffic you explicitly share through your own phone. See
+`docs/PRIVACY-POLICY.md` and the in-app **About → Privacy policy** card.

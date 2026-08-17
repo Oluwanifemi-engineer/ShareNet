@@ -153,6 +153,36 @@ class ShareStateTest {
     }
 
     @Test
+    fun `stats updated while sharing updates in place`() {
+        val sharing = reduce(
+            ShareState.Idle,
+            ShareEvent.StartRequested,
+            ShareEvent.GroupCreated("DIRECT-x", "pw"),
+            ShareEvent.ProxyStarted("192.168.49.1", 8080),
+        ) as ShareState.Sharing
+        assertEquals(null, sharing.info.stats)
+
+        val updated = ShareReducer.reduce(
+            sharing,
+            ShareEvent.StatsUpdated(TrafficStats(bytesUp = 100, bytesDown = 200, activeConnections = 2)),
+        )
+        val info = (updated as ShareState.Sharing).info
+        assertEquals(100L, info.stats?.bytesUp)
+        assertEquals(200L, info.stats?.bytesDown)
+        assertEquals(2, info.stats?.activeConnections)
+        assertEquals("DIRECT-x", info.ssid) // other fields untouched
+    }
+
+    @Test
+    fun `stats updated while idle is ignored`() {
+        val next = ShareReducer.reduce(
+            ShareState.Idle,
+            ShareEvent.StatsUpdated(TrafficStats(1, 2, 0)),
+        )
+        assertEquals(ShareState.Idle, next)
+    }
+
+    @Test
     fun `proxy started before group is an internal error`() {
         val next = ShareReducer.reduce(
             ShareState.Starting(pending = null),

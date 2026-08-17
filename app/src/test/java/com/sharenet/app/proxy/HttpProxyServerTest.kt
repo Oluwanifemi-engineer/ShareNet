@@ -12,6 +12,7 @@ import java.io.OutputStream
 import java.net.ServerSocket
 import java.net.Socket
 import java.nio.charset.StandardCharsets
+import kotlin.random.Random
 
 /**
  * Real-socket integration tests for the proxy. Runs entirely on the JVM —
@@ -289,6 +290,96 @@ class HttpProxyServerTest {
         } finally {
             strictProxy.stop()
         }
+    }
+
+    // ── Robustness (malformed input must never take the proxy down) ────────
+
+    @Test
+    fun `survives random garbage input and keeps serving`() {
+        val random = Random(42)
+        // Random short streams (with line breaks): exercises the parser. EOF
+        // is forced so the proxy bails out instead of waiting for more input.
+        repeat(20) {
+            val client = proxySocket()
+            try {
+                val out = client.getOutputStream()
+                val bytes = ByteArray(random.nextInt(1, 512))
+                random.nextBytes(bytes)
+                out.write(bytes)
+                out.flush()
+                client.shutdownOutput()
+                val buf = ByteArray(1024)
+                val deadline = System.currentTimeMillis() + 3_000
+                while (System.currentTimeMillis() < deadline) {
+                    val n = client.getInputStream().read(buf)
+                    if (n < 0) break
+                }
+            } finally {
+                client.close()
+            }
+        }
+        // Streams with no line break at all hit the line-size cap.
+        repeat(5) {
+            val client = proxySocket()
+            try {
+                val bytes = ByteArray(20_000) { 'A'.code.toByte() }
+                client.getOutputStream().write(bytes)
+                client.getOutputStream().flush()
+                client.shutdownOutput()
+                runCatching { client.getInputStream().readBytes() }
+            } finally {
+                client.close()
+            }
+        }
+        assertTrue(proxy.isRunning)
+
+        // ...and a real request still works afterwards.
+        val origin = startOrigin { socket ->
+            readRequestLine(socket)
+            writeResponse(socket.getOutputStream(), "still alive")
+        }
+        val client = proxySocket()
+        client.getOutputStream().write(
+            ("GET http://127.0.0.1:${origin.localPort}/ HTTP/1.1\r\n" +
+                "Host: 127.0.0.1:${origin.localPort}\r\n" +
+                "Connection: close\r\n\r\n").toByteArray(StandardCharsets.ISO_8859_1),
+        )
+        client.getOutputStream().flush()
+        val response = client.getInputStream().readBytes().toString(StandardCharsets.ISO_8859_1)
+        assertTrue(response.contains("still alive"))
+        client.close()
+    }
+
+    @Test
+    fun `oversized header lines are rejected without crashing`() {
+        val client = proxySocket()
+        client.getOutputStream().write(
+            ("GET http://example.com/ HTTP/1.1\r\n" +
+                "X-Big: " + "A".repeat(100_000) + "\r\n\r\n").toByteArray(StandardCharsets.ISO_8859_1),
+        )
+        client.getOutputStream().flush()
+        runCatching { client.getInputStream().readBytes() }
+        client.close()
+        assertTrue(proxy.isRunning)
+    }
+
+    @Test
+    fun `malformed chunked framing does not crash the proxy`() {
+        val client = proxySocket()
+        // A chunked request whose size line is garbage: the proxy must bail
+        // out of the body copy gracefully.
+        client.getOutputStream().write(
+            ("POST http://example.com/ HTTP/1.1\r\n" +
+                "Host: example.com\r\n" +
+                "Transfer-Encoding: chunked\r\n" +
+                "Connection: close\r\n\r\n" +
+                "not-a-hex-size\r\n" +
+                "garbage").toByteArray(StandardCharsets.ISO_8859_1),
+        )
+        client.getOutputStream().flush()
+        runCatching { client.getInputStream().readBytes() }
+        client.close()
+        assertTrue(proxy.isRunning)
     }
 
     @Test

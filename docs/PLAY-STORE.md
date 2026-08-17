@@ -52,6 +52,22 @@ No runtime data collection happens. Nothing leaves the device except the
 bytes the user explicitly shares (their own traffic, forwarded by their own
 phone). Data Safety form: **no data collected/shared**.
 
+## 3b. Privacy policy (required, even with zero data collection)
+
+Play's User Data policy requires a **privacy policy URL in the store listing
+AND inside the app** for every app, regardless of whether it collects data.
+
+- Host `docs/PRIVACY-POLICY.md` somewhere public (GitHub Pages, Google
+  Sites, your own domain) and paste the URL into the Play Console.
+- The app already shows the policy text in-app (About → Privacy policy); the
+  store listing needs the hosted URL too.
+
+## 3c. Tunnel pairing PIN (client mode)
+
+Client (tunnel) mode now requires the 4-digit **pairing PIN** shown on the
+host's screen. This is a consent boundary, not a data feature — no PIN or
+session data leaves the devices involved. No extra Play declaration needed.
+
 ## 4. Data Safety form (recommended answers)
 
 - **Does your app collect or share any user data?** No.
@@ -76,8 +92,8 @@ Use the questionnaire defaults: no mature content. Suggested rating: **Everyone*
 ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleRelease
 ```
 
-- All unit tests pass (currently 47: proxy, DNS, UDP relay, IPv4 codec, the
-  user-space TCP stack, and the state machine).
+- All unit tests pass (currently 72: proxy, DNS, UDP relay, IPv4 codec, the
+  user-space TCP stack, the destination policy, and the state machine).
 - Lint clean.
 - One device smoke test: `bash scripts/device-test.sh` (host sharing) and
   `bash scripts/two-device-test.sh` (client joining) — see README.
