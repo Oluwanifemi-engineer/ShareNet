@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug-build-only manifest overlay. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Debug builds allow cleartext HTTP so the Sentry verification test
+         (SentryInitTest) can deliver an event to a local listener on
+         127.0.0.1 — Android 9+ blocks cleartext by default. Release builds
+         are unaffected: this overlay is never merged into them, and Sentry
+         DSNs are https by default. -->
+    <application android:usesCleartextTraffic="true" />
+
+</manifest>

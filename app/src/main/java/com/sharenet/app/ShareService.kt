@@ -126,6 +126,10 @@ class ShareService : Service() {
         // Pairing PIN for client (tunnel) mode: generated now, dispatched once
         // the group exists (the reducer only carries it into the pending info).
         sessionPin = randomPin()
+        // Debug builds only: the adb device test reads the PIN from logcat
+        // (reading it from the UI is unreliable — animations keep uiautomator
+        // from ever seeing an idle screen). Release builds never log it.
+        if (BuildConfig.DEBUG) log("session PIN: $sessionPin")
 
         if (!Permissions.hasAll(this)) {
             fail(getString(R.string.error_permissions))

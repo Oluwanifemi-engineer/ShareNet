@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ShareNet Privacy Policy</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    line-height: 1.6;
+    max-width: 720px;
+    margin: 2rem auto;
+    padding: 0 1.25rem;
+    color: #1a1a1a;
+    background: #fff;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { color: #e6e6e6; background: #121212; }
+  }
+  h1 { font-size: 1.6rem; border-bottom: 2px solid #4caf50; padding-bottom: .4rem; }
+  h2 { font-size: 1.15rem; margin-top: 1.8rem; }
+  p, li { font-size: .98rem; }
+  .updated { color: #666; font-size: .85rem; }
+  code { background: rgba(127,127,127,.15); padding: .1em .35em; border-radius: 4px; }
+</style>
+</head>
+<body>
+<h1>ShareNet Privacy Policy</h1>
+<p class="updated">Last updated: August 2026</p>
+
+<p>This policy explains what ShareNet does with information. The short version:
+<strong>ShareNet is a relay. It collects nothing, stores nothing, and sends nothing
+anywhere except the network traffic you explicitly choose to share through your
+own device.</strong></p>
+
+<h2>What ShareNet does</h2>
+<p>ShareNet turns your Android phone into a local Wi‑Fi hotspot that shares your
+phone's internet connection (Wi‑Fi or cellular) with nearby devices. It does
+this by creating a Wi‑Fi Direct group and running a local proxy/relay on your
+phone. Devices you invite join that network and route their traffic through
+your phone.</p>
+
+<h2>Data collection</h2>
+<p>ShareNet does <strong>not</strong> collect, transmit, or store any personal data:</p>
+<ul>
+  <li>No accounts, no sign‑in, no analytics, no advertising identifiers are used.</li>
+  <li>The app never reads your location. On older Android versions (12 and below)
+      Android itself requires a location permission to use Wi‑Fi Direct; ShareNet
+      declares it only because the platform demands it and never reads location data.</li>
+  <li><strong>Crash reporting is opt‑in and off by default.</strong> The app bundles
+      the Sentry Android SDK but it is inactive unless the developer configures a
+      Sentry DSN at build time; without that configuration no crash data is sent to
+      anyone. When configured (release builds only, as the developer ships them),
+      crash reports are sent to the developer's Sentry project and may contain
+      device model, OS version, and stack traces; the app scrubs Wi‑Fi Direct
+      session addresses (<code>192.168.49.x</code>, <code>26.0.0.x</code>) from
+      report content before upload.</li>
+  <li>No data leaves your device except the network traffic you explicitly share:
+      the bytes that pass through your phone's proxy/relay to the destinations
+      you (or the devices you invited) request, forwarded by your own phone over
+      your own connection.</li>
+</ul>
+
+<h2>The pairing PIN and session details</h2>
+<p>While a sharing session is active, the app shows the hotspot name, password,
+proxy address, and a randomly generated pairing PIN on the screen and in a
+notification. These exist only for the current session, are generated on your
+device, and are not transmitted anywhere except to the devices you choose to
+share them with. The client host address and PIN you enter on a joining phone
+are stored locally on that phone only.</p>
+
+<h2>Permissions</h2>
+<ul>
+  <li><strong>Nearby Wi‑Fi devices</strong> (Android 13+): required by Android to
+      create and manage the Wi‑Fi Direct group.</li>
+  <li><strong>Notifications</strong>: shows the ongoing sharing/tunnel status.</li>
+  <li><strong>Location</strong> (Android 12 and below): required by the platform
+      for Wi‑Fi Direct on those versions; never used to read your location.</li>
+</ul>
+
+<h2>Network traffic</h2>
+<p>ShareNet relays traffic exactly as the user directs it. It does not inspect,
+log, modify, or sell the content of any traffic. Because the relay runs on your
+own phone, all forwarded traffic is subject to the privacy of your own
+connection (your carrier/ISP) and of the destination services.</p>
+
+<h2>Children</h2>
+<p>ShareNet does not target children and does not collect any data from anyone.</p>
+
+<h2>Changes</h2>
+<p>If this policy changes, the updated version will be posted here with a new
+"last updated" date.</p>
+
+<h2>Contact</h2>
+<p>For questions about this policy, contact the developer at the support email
+listed on the app's store listing.</p>
+
+</body>
+</html>

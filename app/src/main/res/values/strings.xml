@@ -99,4 +99,5 @@
     <string name="privacy_title">ShareNet privacy</string>
     <string name="privacy_body">ShareNet collects nothing, stores nothing, and sends nothing anywhere except the network traffic you explicitly share through your own phone. It never reads your location; on older Android versions the platform requires a location permission for Wi-Fi Direct, which the app declares but never uses.</string>
     <string name="privacy_ok">Got it</string>
+    <string name="privacy_online">View online</string>
 </resources>

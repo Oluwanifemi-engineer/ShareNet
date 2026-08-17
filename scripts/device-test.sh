@@ -20,38 +20,14 @@ echo "==> Granting permissions"
 "$ADB" shell pm grant $PKG android.permission.NEARBY_WIFI_DEVICES || true
 "$ADB" shell pm grant $PKG android.permission.POST_NOTIFICATIONS || true
 
-echo "==> Launching and starting sharing (tap the Start button)"
+echo "==> Launching and starting sharing (AUTO_START intent, no UI taps)"
+# Taps are unreliable on real devices (scroll position, animations, a human
+# on the phone), so the app exposes a test-hook action that starts sharing
+# programmatically; the script only reads the UI, never pokes it.
 "$ADB" shell am force-stop $PKG
 "$ADB" logcat -c
-"$ADB" shell am start -n $PKG/.MainActivity
-sleep 5
-# Find the Start/Stop toggle button and tap its center. The uiautomator dump
-# is a single line, so extract the toggleButton node with a regex rather than
-# splitting on '>' (which POSIX tr would silently not do).
-tap_button() {
-  local BOUNDS=""
-  for attempt in $(seq 1 10); do
-    "$ADB" shell uiautomator dump /sdcard/sn.xml >/dev/null 2>&1
-    BOUNDS=$("$ADB" shell cat /sdcard/sn.xml | python3 -c "
-import re, sys
-xml = sys.stdin.read()
-m = re.search(r'resource-id=\"[^\"]*toggleButton\"[^>]*bounds=\"\\[([0-9]+),([0-9]+)\\]\\[([0-9]+),([0-9]+)\\]\"', xml)
-if m:
-    x1, y1, x2, y2 = map(int, m.groups())
-    if x2 > x1 and y2 > y1:
-        print(int((x1+x2)/2), int((y1+y2)/2))
-" 2>/dev/null | head -1)
-    if [ -n "$BOUNDS" ]; then break; fi
-    sleep 1
-  done
-  if [ -z "$BOUNDS" ]; then
-    echo "    toggle button not found in the UI dump (10 tries)"
-    return 1
-  fi
-  echo "    tapping $BOUNDS"
-  "$ADB" shell input tap $BOUNDS
-}
-tap_button
+"$ADB" shell am start -n $PKG/.MainActivity -a com.sharenet.app.action.AUTO_START
+sleep 4
 
 echo "==> Waiting for the group + proxy (up to 30s)"
 for i in $(seq 1 30); do
@@ -62,27 +38,16 @@ for i in $(seq 1 30); do
   if [ -n "$PROXY" ]; then echo "    proxy is up: $PROXY"; break; fi
 done
 
-echo "==> Reading the pairing PIN from the UI (for the tunnel AUTH frame)"
-# The PIN row sits below the QR code, which is below the fold on most
-# screens — and uiautomator only dumps on-screen nodes. Scroll down, then
-# re-dump. Attribute order in the dump is not guaranteed, so parse per-node
-# (find the pinValue node, read its text) instead of one giant regex.
+echo "==> Reading the pairing PIN (from the app's debug-only logcat line)"
+# UI reads are unreliable on real devices (the live-stats/radar animations
+# keep uiautomator from ever seeing an idle screen, and the PIN row sits
+# below the fold), so the DEBUG build logs the per-session PIN; release
+# builds never print it.
 PIN=""
-for i in $(seq 1 5); do
-  "$ADB" shell input swipe 360 1200 360 450 300
-  sleep 1
-  "$ADB" shell uiautomator dump /sdcard/sn3.xml >/dev/null 2>&1
-  PIN=$("$ADB" shell cat /sdcard/sn3.xml | python3 -c "
-import re, sys
-xml = sys.stdin.read()
-for node in re.findall(r'<node [^>]*>', xml):
-    if 'pinValue' in node:
-        m = re.search(r'text=\"([0-9]*)\"', node)
-        if m:
-            print(m.group(1))
-            break
-" 2>/dev/null | head -1)
+for i in $(seq 1 10); do
+  PIN=$("$ADB" logcat -d | grep -oE "session PIN: [0-9]{4}" | tail -1 | awk '{print $3}')
   [ -n "$PIN" ] && break
+  sleep 1
 done
 echo "    pairing PIN: ${PIN:-<not found>}"
 
@@ -171,8 +136,17 @@ print("    TCP tunnel relay: ", "PASS" if ok else "FAIL")
 PY
 
 echo "==> Stopping sharing"
-tap_button
-sleep 4
-"$ADB" shell "dumpsys activity services $PKG" | grep -c "ServiceRecord" \
-  | xargs echo "    remaining service records (want 0):"
+# The service is not exported, so the shell cannot send it the STOP action;
+# force-stop is the reliable equivalent (it cannot miss like a UI tap can on
+# a scrolling/animating screen — or one with a human on it).
+"$ADB" shell am force-stop $PKG
+COUNT=1
+for i in $(seq 1 10); do
+  sleep 1
+  COUNT=$("$ADB" shell "dumpsys activity services $PKG" | grep -c "startRequested=true" || true)
+  [ "$COUNT" -eq 0 ] && break
+done
+# Historical (destroyed) records linger in dumpsys; startRequested=true is
+# what identifies a LIVE service, so a count of 0 means fully stopped.
+echo "    live service records (want 0): $COUNT"
 echo "Done."

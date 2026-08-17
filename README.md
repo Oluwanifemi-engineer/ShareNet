@@ -265,6 +265,15 @@ ShareNet collects nothing, stores nothing, and sends nothing anywhere except
 the traffic you explicitly share through your own phone. See
 `docs/PRIVACY-POLICY.md` and the in-app **About → Privacy policy** card.
 
+**Hosting the policy (required for Play Store).** `docs/PRIVACY-POLICY.html`
+is a self-contained page ready to publish on any static host (GitHub Pages,
+Netlify, Cloudflare Pages — no server needed). Once it is live, build with
+`-PprivacyPolicyUrl=https://your.host/privacy.html` (or put the property in
+gradle.properties) and the About dialog gains a **View online** button that
+opens the hosted policy in the browser; without the property the dialog shows
+the in-app text only. Paste the same URL into the Play Console listing and the
+Data Safety form.
+
 **Crash reporting (optional, off by default).** The app bundles the Sentry
 Android SDK but it is **inactive unless a DSN is configured**: drop
 `sentry.properties` (gitignored) next to `keystore.properties` with a line

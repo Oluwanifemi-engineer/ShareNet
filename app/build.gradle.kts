@@ -23,6 +23,13 @@ val sentryProps = Properties().apply {
 val sentryDsn = (sentryProps.getProperty("dsn") ?: "").trim()
     .replace("\\", "\\\\").replace("\"", "\\\"")
 
+// Hosted privacy-policy URL, set at build time with -PprivacyPolicyUrl=…
+// (or in gradle.properties). Empty by default: the About dialog then only
+// shows the in-app policy text.
+val privacyPolicyUrl = (project.findProperty("privacyPolicyUrl") as String?)
+    ?.trim().orEmpty()
+    .replace("\\", "\\\\").replace("\"", "\\\"")
+
 android {
     namespace = "com.sharenet.app"
     compileSdk = 36
@@ -75,6 +82,8 @@ android {
     defaultConfig {
         // Empty until the developer drops a DSN into sentry.properties.
         buildConfigField("String", "SENTRY_DSN", "\"$sentryDsn\"")
+        // Empty unless built with -PprivacyPolicyUrl=https://…
+        buildConfigField("String", "PRIVACY_POLICY_URL", "\"$privacyPolicyUrl\"")
     }
 
     testOptions {

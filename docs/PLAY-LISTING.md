@@ -111,9 +111,11 @@ Rules: 1080×1920 (9:16) or 1080×2400, PNG/JPG, no text below the bottom
 
 ## Pre-submit checklist
 
-- [ ] Privacy policy hosted at a public URL; link added to the listing, the
-      in-app About dialog, and the Data Safety form (see
-      `docs/PRIVACY-POLICY.md`).
+- [ ] Privacy policy hosted at a public URL (drop `docs/PRIVACY-POLICY.html`
+      on GitHub Pages/Netlify); build with
+      `-PprivacyPolicyUrl=https://…` so the About dialog shows **View
+      online**, and paste the same URL into the listing and the Data Safety
+      form (see `docs/PRIVACY-POLICY.md`).
 - [ ] Release APK signed with the real keystore (`docs/PLAY-STORE.md` §1).
 - [ ] Data Safety form matches `docs/PLAY-STORE.md` §4 (no data collected /
       transmitted when crash reporting is off; declare Sentry as a third

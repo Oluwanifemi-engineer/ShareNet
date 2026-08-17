@@ -12,6 +12,7 @@ import android.view.View
 import android.widget.Toast
 import androidx.core.graphics.createBitmap
 import androidx.core.graphics.set
+import androidx.core.net.toUri
 import java.util.Locale
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -66,6 +67,21 @@ class MainActivity : AppCompatActivity() {
 
         ShareController.observe(stateListener)
         TunnelController.observe(tunnelListener)
+
+        // Test hook for the adb scripts (scripts/device-test.sh): launching
+        // with this action starts sharing without any UI taps, which is the
+        // only automation that is reliable on real devices.
+        if (intent?.action == ACTION_AUTO_START) {
+            startSharingIfPossible()
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.action == ACTION_AUTO_START) {
+            startSharingIfPossible()
+        }
     }
 
     override fun onResume() {
@@ -101,14 +117,16 @@ class MainActivity : AppCompatActivity() {
 
     private fun onToggle() {
         when (ShareController.state) {
-            is ShareState.Idle, is ShareState.Failed -> {
-                if (Permissions.hasAll(this)) {
-                    ShareService.start(this)
-                } else {
-                    Permissions.request(this)
-                }
-            }
+            is ShareState.Idle, is ShareState.Failed -> startSharingIfPossible()
             else -> ShareService.stop(this)
+        }
+    }
+
+    private fun startSharingIfPossible() {
+        if (Permissions.hasAll(this)) {
+            ShareService.start(this)
+        } else {
+            Permissions.request(this)
         }
     }
 
@@ -320,11 +338,22 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showPrivacyDialog() {
-        AlertDialog.Builder(this)
+        val builder = AlertDialog.Builder(this)
             .setTitle(R.string.privacy_title)
             .setMessage(R.string.privacy_body)
             .setPositiveButton(R.string.privacy_ok, null)
-            .show()
+        // When the build embeds a hosted policy URL (-PprivacyPolicyUrl=…),
+        // offer to open it in the browser as well.
+        if (BuildConfig.PRIVACY_POLICY_URL.isNotBlank()) {
+            builder.setNeutralButton(R.string.privacy_online) { _, _ ->
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, BuildConfig.PRIVACY_POLICY_URL.toUri()))
+                } catch (_: Exception) {
+                    Toast.makeText(this, R.string.error_generic, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+        builder.show()
     }
 
     private fun copyToClipboard(value: String) {
@@ -353,5 +382,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
+        /** Test hook action for the adb scripts: start sharing without taps. */
+        const val ACTION_AUTO_START = "com.sharenet.app.action.AUTO_START"
     }
 }
