@@ -1,0 +1,404 @@
+package com.sharenet.app
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
+import java.security.SecureRandom
+import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
+import com.sharenet.app.proxy.DnsForwarder
+import com.sharenet.app.proxy.HttpProxyServer
+import com.sharenet.app.proxy.P2pAddressResolver
+import com.sharenet.app.proxy.ProxyBindException
+import com.sharenet.app.proxy.ProxyStats
+import com.sharenet.app.proxy.UdpRelayServer
+import com.sharenet.app.tunnel.TcpTunnelServer
+import com.sharenet.app.tunnel.TunnelProtocol
+import com.sharenet.app.util.NetworkInfo
+import com.sharenet.app.util.Permissions
+
+/**
+ * The foreground service that runs the share session.
+ *
+ * Flow on START:
+ *   1. startForeground (contract for startForegroundService) with a
+ *      "starting" notification.
+ *   2. Verify permissions; describe the upstream (Wi-Fi SSID or cellular).
+ *   3. Become a Wi-Fi Direct Group Owner ([WifiDirectManager]).
+ *   4. Once the group exists, resolve the GO IP and start [HttpProxyServer]
+ *      on it (retrying briefly — the P2P interface can lag the group callback).
+ *   5. Emit [ShareEvent.ProxyStarted] -> UI shows SSID/passphrase/proxy.
+ *   6. Poll every few seconds for connected clients and upstream changes,
+ *      updating the notification live.
+ *
+ * Every state change goes through [ShareController] on the main thread.
+ */
+class ShareService : Service() {
+
+    private val handler = Handler(Looper.getMainLooper())
+    private val stats = ProxyStats()
+    private var wifiDirect: WifiDirectManager? = null
+    private var proxy: HttpProxyServer? = null
+    private var relay: UdpRelayServer? = null
+    private var dns: DnsForwarder? = null
+    private var tcpRelay: TcpTunnelServer? = null
+    private var sessionActive = false
+    private var lastUpstream: String? = null
+    private var sessionPin: String? = null
+
+    // Bind-retry runnables are tracked so a stop/fail during the retry window
+    // cancels them — otherwise a retry could fire after teardown, bind a
+    // socket the service no longer owns, and break the NEXT session.
+    private val pendingRetries = mutableSetOf<Runnable>()
+
+    private val ticker = object : Runnable {
+        override fun run() {
+            tick()
+            handler.postDelayed(this, TICK_MS)
+        }
+    }
+
+    private val wifiListener = object : WifiDirectManager.Listener {
+        override fun onGroupCreated(ssid: String, passphrase: String) {
+            ShareController.dispatch(ShareEvent.GroupCreated(ssid, passphrase))
+            sessionPin?.let { ShareController.dispatch(ShareEvent.PinGenerated(it)) }
+            startProxyWithRetry(attemptsLeft = PROXY_BIND_RETRIES)
+        }
+
+        override fun onGroupLost() {
+            fail(getString(R.string.error_group_lost))
+        }
+
+        override fun onClientsChanged(count: Int) {
+            ShareController.dispatch(ShareEvent.ClientsChanged(count))
+            refreshNotification()
+        }
+
+        override fun onError(message: String) {
+            fail(message)
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        ensureNotificationChannel()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_STOP -> stopSharing()
+            else -> startSharing()
+        }
+        // START_STICKY: if the system kills us (memory pressure) while an
+        // explicit stopSelf() was never called, restart the share session
+        // instead of silently dropping the hotspot.
+        return START_STICKY
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    // ── Start ───────────────────────────────────────────────────────────────
+
+    private fun startSharing() {
+        if (sessionActive) return
+        sessionActive = true
+
+        // Contract for startForegroundService: startForeground promptly.
+        ServiceCompat.startForeground(
+            this,
+            NOTIFICATION_ID,
+            buildNotification(getString(R.string.notif_title_starting), null),
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+        )
+
+        ShareController.dispatch(ShareEvent.StartRequested)
+
+        // Pairing PIN for client (tunnel) mode: generated now, dispatched once
+        // the group exists (the reducer only carries it into the pending info).
+        sessionPin = randomPin()
+
+        if (!Permissions.hasAll(this)) {
+            fail(getString(R.string.error_permissions))
+            return
+        }
+
+        lastUpstream = NetworkInfo.describe(this)
+        ShareController.dispatch(
+            ShareEvent.UpstreamChanged(lastUpstream ?: getString(R.string.upstream_none)),
+        )
+
+        val manager = WifiDirectManager(this)
+        wifiDirect = manager
+        manager.start(wifiListener)
+    }
+
+    /** Bind can race the P2P interface coming up; retry a few times. */
+    private fun startProxyWithRetry(attemptsLeft: Int) {
+        val host = P2pAddressResolver.resolveGroupOwnerAddress()
+        val candidate = HttpProxyServer(host, PROXY_PORT, stats) { msg ->
+            log("proxy: $msg")
+        }
+        try {
+            candidate.start()
+            proxy = candidate
+            ShareController.dispatch(ShareEvent.ProxyStarted(host, candidate.boundPort))
+            startRelayWithRetry(attemptsLeft = RELAY_BIND_RETRIES, host = host)
+            startTicker()
+            refreshNotification()
+        } catch (e: ProxyBindException) {
+            if (attemptsLeft <= 0) {
+                fail(getString(R.string.error_proxy_bind))
+            } else {
+                scheduleRetry(PROXY_BIND_RETRY_DELAY_MS) {
+                    startProxyWithRetry(attemptsLeft - 1)
+                }
+            }
+        }
+    }
+
+    /** UDP relay for client-mode phones; bound like the proxy to the P2P IP. */
+    private fun startRelayWithRetry(attemptsLeft: Int, host: String) {
+        val candidate = UdpRelayServer(host, UDP_RELAY_PORT) { msg -> log("relay: $msg") }
+        try {
+            candidate.start()
+            relay = candidate
+            ShareController.dispatch(ShareEvent.RelayStarted(candidate.boundPort))
+            startDns(host)
+            startTcpRelay(host)
+            refreshNotification()
+        } catch (e: ProxyBindException) {
+            if (attemptsLeft <= 0) {
+                log("udp relay failed to bind: ${e.message}")
+            } else {
+                scheduleRetry(PROXY_BIND_RETRY_DELAY_MS) {
+                    startRelayWithRetry(attemptsLeft - 1, host)
+                }
+            }
+        }
+    }
+
+    /**
+     * Runs [block] on the main handler later, but only while the session is
+     * still active, and tracks it so teardown can cancel it.
+     */
+    private fun scheduleRetry(delayMs: Long, block: () -> Unit) {
+        lateinit var runnable: Runnable
+        runnable = Runnable {
+            pendingRetries.remove(runnable)
+            if (sessionActive) block()
+        }
+        pendingRetries.add(runnable)
+        handler.postDelayed(runnable, delayMs)
+    }
+
+    /**
+     * DNS for the P2P network, bound to the group owner address (port 53).
+     * Best-effort: if it cannot bind we still share — clients can use their
+     * own resolvers.
+     */
+    private fun startDns(host: String) {
+        try {
+            val candidate = DnsForwarder.forHosts(host, DNS_PORT, NetworkInfo.dnsServers(this)) { msg ->
+                log("dns: $msg")
+            }
+            candidate.start()
+            dns = candidate
+            log("dns forwarder up on $host:$DNS_PORT")
+        } catch (e: ProxyBindException) {
+            log("dns forwarder failed to bind (non-fatal): ${e.message}")
+        }
+    }
+
+    /**
+     * The Tier-2 TCP tunnel relay (for client phones in tunnel mode). Like
+     * the proxy, it binds to the P2P address; best-effort.
+     */
+    private fun startTcpRelay(host: String) {
+        try {
+            val candidate = TcpTunnelServer(
+                host,
+                TunnelProtocol.TCP_PORT,
+                authPin = sessionPin,
+            ) { msg ->
+                log("tcp-relay: $msg")
+            }
+            candidate.start()
+            tcpRelay = candidate
+            log("tcp relay up on $host:${candidate.boundPort}")
+        } catch (e: ProxyBindException) {
+            log("tcp relay failed to bind (non-fatal): ${e.message}")
+        }
+    }
+
+    // ── Periodic tick: clients + upstream ───────────────────────────────────
+
+    private fun startTicker() {
+        handler.removeCallbacks(ticker)
+        handler.postDelayed(ticker, TICK_MS)
+    }
+
+    private fun stopTicker() {
+        handler.removeCallbacks(ticker)
+    }
+
+    private fun tick() {
+        wifiDirect?.refreshClients()
+
+        val now = NetworkInfo.describe(this)
+        val display = now ?: getString(R.string.upstream_none)
+        if (display != lastUpstream) {
+            lastUpstream = display
+            ShareController.dispatch(ShareEvent.UpstreamChanged(display))
+            refreshNotification()
+        }
+    }
+
+    // ── Stop / fail ─────────────────────────────────────────────────────────
+
+    private fun stopSharing() {
+        if (!sessionActive) return
+        sessionActive = false
+        sessionPin = null
+        ShareController.dispatch(ShareEvent.StopRequested)
+        teardown()
+        ShareController.dispatch(ShareEvent.Stopped)
+        stopForegroundCompat()
+        stopSelf()
+    }
+
+    private fun fail(message: String) {
+        if (!sessionActive) return
+        sessionActive = false
+        sessionPin = null
+        ShareController.dispatch(ShareEvent.Failed(message))
+        teardown()
+        stopForegroundCompat()
+        stopSelf()
+    }
+
+    private fun teardown() {
+        stopTicker()
+        // Cancel pending bind retries: they must never fire after teardown.
+        for (r in pendingRetries) handler.removeCallbacks(r)
+        pendingRetries.clear()
+        proxy?.stop()
+        proxy = null
+        relay?.stop()
+        relay = null
+        dns?.stop()
+        dns = null
+        tcpRelay?.stop()
+        tcpRelay = null
+        wifiDirect?.stop()
+        wifiDirect = null
+    }
+
+    // ── Notifications ───────────────────────────────────────────────────────
+
+    private fun ensureNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                getString(R.string.channel_share_name),
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply { setShowBadge(false) }
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        }
+    }
+
+    private fun refreshNotification() {
+        val state = ShareController.state
+        if (state !is ShareState.Sharing) return
+        val relayLine = state.info.udpRelayPort?.let {
+            getString(R.string.notif_relay_line, state.info.proxyHost, it)
+        } ?: ""
+        val pinLine = state.info.pin?.let {
+            getString(R.string.notif_pin_line, it)
+        } ?: ""
+        val text = getString(
+            R.string.notif_text_sharing,
+            state.info.clients,
+            state.info.proxyAddress,
+        ) + relayLine + pinLine
+        val notification = buildNotification(
+            getString(R.string.notif_title_sharing, state.info.ssid),
+            text,
+        )
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.notify(NOTIFICATION_ID, notification)
+    }
+
+    private fun buildNotification(title: String, text: String?): Notification {
+        val contentIntent = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val stopIntent = PendingIntent.getService(
+            this,
+            1,
+            Intent(this, ShareService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat_share)
+            .setContentTitle(title)
+            .setContentText(text ?: getString(R.string.status_starting))
+            .setContentIntent(contentIntent)
+            .setOngoing(true)
+            .setSilent(true)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .addAction(0, getString(R.string.notif_action_stop), stopIntent)
+        return builder.build()
+    }
+
+    private fun stopForegroundCompat() {
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+    }
+
+    private fun randomPin(): String =
+        (SecureRandom().nextInt(10_000)).toString().padStart(4, '0')
+
+    private fun log(message: String) {
+        android.util.Log.d(TAG, message)
+    }
+
+    companion object {
+        private const val TAG = "ShareNet"
+
+        const val ACTION_START = "com.sharenet.app.action.START"
+        const val ACTION_STOP = "com.sharenet.app.action.STOP"
+
+        private const val CHANNEL_ID = "sharenet_status"
+        private const val NOTIFICATION_ID = 1
+        private const val PROXY_PORT = 8080
+        private const val UDP_RELAY_PORT = 5555
+        private const val DNS_PORT = 53
+        private const val TICK_MS = 3_000L
+        private const val PROXY_BIND_RETRIES = 6
+        private const val RELAY_BIND_RETRIES = 6
+        private const val PROXY_BIND_RETRY_DELAY_MS = 500L
+
+        fun start(context: Context) {
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, ShareService::class.java).setAction(ACTION_START),
+            )
+        }
+
+        fun stop(context: Context) {
+            context.startService(Intent(context, ShareService::class.java).setAction(ACTION_STOP))
+        }
+    }
+}

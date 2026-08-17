@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Brand -->
+    <color name="brand">#9A9AF0</color>
+    <color name="brand_dark">#B7B7F5</color>
+
+    <!-- Material 3 roles (dark) -->
+    <color name="md_primary">#BFC2FF</color>
+    <color name="md_on_primary">#2A2A64</color>
+    <color name="md_primary_container">#4343A8</color>
+    <color name="md_on_primary_container">#E2E1FF</color>
+    <color name="md_secondary">#C5C5DC</color>
+    <color name="md_on_secondary">#2E2F42</color>
+    <color name="md_secondary_container">#454659</color>
+    <color name="md_on_secondary_container">#E1E1F9</color>
+    <color name="md_tertiary">#EBB5CA</color>
+    <color name="md_on_tertiary">#472533</color>
+    <color name="md_tertiary_container">#603B4A</color>
+    <color name="md_on_tertiary_container">#FFD9E4</color>
+    <color name="md_error">#F2B8B5</color>
+    <color name="md_on_error">#601410</color>
+    <color name="md_error_container">#8C1D18</color>
+    <color name="md_on_error_container">#F9DEDC</color>
+    <color name="md_surface">#131318</color>
+    <color name="md_on_surface">#E4E1E9</color>
+    <color name="md_surface_variant">#46464F</color>
+    <color name="md_on_surface_variant">#C8C5D0</color>
+    <color name="md_background">#0F0F14</color>
+    <color name="md_on_background">#E4E1E9</color>
+    <color name="md_outline">#90909A</color>
+    <color name="md_outline_variant">#46464F</color>
+
+    <!-- Semantic -->
+    <color name="live">#7BD88F</color>
+    <color name="live_container">#1B3A24</color>
+    <color name="idle">#9AA0A6</color>
+    <color name="danger">#F2B8B5</color>
+    <color name="danger_container">#4A1411</color>
+    <color name="on_danger_container">#F9DEDC</color>
+
+    <!-- Legacy names -->
+    <color name="primary">#BFC2FF</color>
+    <color name="primary_dark">#B7B7F5</color>
+    <color name="bg">#0F0F14</color>
+    <color name="card">#131318</color>
+    <color name="text_primary">#E4E1E9</color>
+    <color name="text_secondary">#C8C5D0</color>
+    <color name="text_on_primary">#2A2A64</color>
+    <color name="accent_green">#7BD88F</color>
+    <color name="accent_red">#F2B8B5</color>
+    <color name="mono_bg">#2A2A33</color>
+</resources>

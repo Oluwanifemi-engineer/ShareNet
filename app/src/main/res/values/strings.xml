@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ShareNet</string>
+    <string name="tagline">Share your connection with the devices around you.</string>
+
+    <!-- Hero status -->
+    <string name="status_idle">You\'re not sharing anything right now.</string>
+    <string name="status_starting">Getting things ready…</string>
+    <string name="status_sharing">Your connection is live.</string>
+    <string name="status_stopping">Wrapping up…</string>
+    <string name="status_failed">%1$s</string>
+
+    <!-- Upstream + clients -->
+    <string name="upstream_none">No connection to share yet</string>
+    <string name="upstream_unknown">Connected to a network</string>
+    <string name="upstream_wifi">Sharing your Wi-Fi — %1$s</string>
+    <string name="upstream_cellular">Sharing your mobile data</string>
+    <string name="upstream_network">Sharing your connection</string>
+    <string name="clients_zero">No devices joined yet</string>
+    <string name="clients_one">1 device connected</string>
+    <string name="clients_many">%1$d devices connected</string>
+
+    <!-- Share details -->
+    <string name="share_section_title">What other devices need</string>
+    <string name="share_ssid_label">Network name</string>
+    <string name="share_passphrase_label">Password</string>
+    <string name="share_proxy_label">Proxy address</string>
+    <string name="share_udp_relay_label">For games &amp; calls</string>
+    <string name="share_udp_relay_value">%1$s:%2$d</string>
+    <string name="share_udp_relay_none">Not running</string>
+    <string name="share_pin_label">Pairing PIN</string>
+    <string name="share_pin_hint">For the ShareNet app on another phone (client mode)</string>
+    <string name="copy">Copy</string>
+    <string name="copied">Copied</string>
+
+    <!-- Buttons -->
+    <string name="action_start">Start sharing</string>
+    <string name="action_stop">Stop sharing</string>
+
+    <!-- How it works -->
+    <string name="howto_title">How others connect</string>
+    <string name="howto_step1">1. On the other device, open Wi-Fi settings and join the network below. Enter the password when it asks.</string>
+    <string name="howto_step2">2. Then open that device\'s proxy settings and use the address below. On Android, that\'s under Wi-Fi → the network → Modify → Advanced → Proxy. On a computer, it\'s in the network\'s settings.</string>
+    <string name="howto_note">One honest note: a few apps ignore proxy settings, and most games and video calls need extra support. The client mode below adds that for Android.</string>
+
+    <!-- Client mode -->
+    <string name="client_title">Joining someone else\'s hotspot?</string>
+    <string name="client_step1">1. First join the host\'s network in your Wi-Fi settings — they\'ll share the name and password.</string>
+    <string name="client_step2">2. Then enter the host\'s address below (usually 192.168.49.1) and the pairing PIN the host shows on its screen. Android will ask you to allow the connection — that\'s expected.</string>
+    <string name="client_step3">3. Games, calls, and streaming now work through the host. For browsing, also set the proxy as described above.</string>
+    <string name="client_host_hint">Host address</string>
+    <string name="client_pin_hint">Host\'s pairing PIN</string>
+    <string name="client_connect">Connect</string>
+    <string name="client_disconnect">Disconnect</string>
+    <string name="client_status_idle">Not connected</string>
+    <string name="client_status_starting">Connecting…</string>
+    <string name="client_status_active">Connected to %1$s</string>
+    <string name="client_status_failed">%1$s</string>
+
+    <!-- Tunnel -->
+    <string name="tunnel_session">ShareNet — connected to %1$s</string>
+    <string name="tunnel_error_denied">Android didn\'t allow the connection. Try again and accept the prompt.</string>
+    <string name="tunnel_error_socket">The connection couldn\'t be opened.</string>
+    <string name="tunnel_error_lost">The connection to the host was lost. Check that the host is still sharing, then reconnect.</string>
+    <string name="tunnel_error_auth">The host rejected the pairing PIN. Check the PIN shown on the host\'s screen and try again.</string>
+    <string name="tunnel_notif_active">Connected — routing traffic to %1$s</string>
+    <string name="channel_tunnel_name">Connection status</string>
+
+    <!-- Built-in shortcut -->
+    <string name="tip_os_title">Your phone may have a built-in shortcut</string>
+    <string name="tip_os_body">If this phone runs Android 13 or newer, try this first: connect to Wi-Fi, then switch on your hotspot in Settings. Many phones share the Wi-Fi connection with no extra battery cost. Not every phone can do it — and ShareNet works on all of them either way.</string>
+    <string name="tip_os_button">Open hotspot settings</string>
+
+    <!-- Notifications -->
+    <string name="channel_share_name">Sharing status</string>
+    <string name="notif_title_sharing">Sharing %1$s</string>
+    <string name="notif_text_sharing">%1$d device(s) connected · %2$s</string>
+    <string name="notif_title_starting">Getting ready…</string>
+    <string name="notif_action_stop">Stop</string>
+    <string name="notif_relay_line"> · relay %1$s:%2$d</string>
+    <string name="notif_pin_line"> · PIN %1$s</string>
+
+    <!-- Errors -->
+    <string name="error_permissions">We need permission to find nearby devices and show notifications before sharing.</string>
+    <string name="error_group">The hotspot couldn\'t start. Try turning Wi-Fi off and on, then start again.</string>
+    <string name="error_group_lost">The hotspot was closed by the system.</string>
+    <string name="error_proxy_bind">The connection couldn\'t be set up on this phone.</string>
+    <string name="error_generic">Something went wrong: %1$s</string>
+</resources>
