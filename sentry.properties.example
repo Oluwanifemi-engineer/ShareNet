@@ -1,0 +1,8 @@
+# Copy this file to sentry.properties (gitignored) and replace the DSN with
+# your own from Sentry (Settings -> Projects -> <project> -> Client Keys).
+# Without sentry.properties the app builds and runs with crash reporting
+# fully disabled — no crash data ever leaves the device.
+#
+#   cp sentry.properties.example sentry.properties
+#
+dsn=https://your-public-key@o123456.ingest.sentry.io/1234567

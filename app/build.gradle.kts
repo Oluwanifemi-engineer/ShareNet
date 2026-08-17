@@ -96,7 +96,7 @@ dependencies {
     implementation(libs.androidx.appcompat)
     implementation(libs.material)
     implementation(libs.zxing.core) // QR rendering for the join-info code
-    implementation(libs.sentry.android) // crash reporting, opt-in via DSN
+    implementation(libs.sentry.android.core) // crash reporting, opt-in via DSN
 
     // JVM unit tests only — the HTTP proxy and state machine are pure Kotlin
     // with zero Android imports, so they run fast on the plain JVM.

@@ -16,7 +16,11 @@ androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = 
 androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
 material = { group = "com.google.android.material", name = "material", version.ref = "material" }
 zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
-sentry-android = { group = "io.sentry", name = "sentry-android", version.ref = "sentry" }
+# sentry-android-core only (not the full sentry-android wrapper): the app
+# is pure Kotlin, so the NDK crash handler and replay (screen recording)
+# would add ~3MB of native libs for zero benefit — and replay would be a
+# privacy problem for a relay app.
+sentry-android-core = { group = "io.sentry", name = "sentry-android-core", version.ref = "sentry" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxTestExtJunit" }
 androidx-test-core = { group = "androidx.test", name = "core", version.ref = "androidxTestCore" }

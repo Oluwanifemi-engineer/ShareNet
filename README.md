@@ -275,9 +275,10 @@ the in-app text only. Paste the same URL into the Play Console listing and the
 Data Safety form.
 
 **Crash reporting (optional, off by default).** The app bundles the Sentry
-Android SDK but it is **inactive unless a DSN is configured**: drop
-`sentry.properties` (gitignored) next to `keystore.properties` with a line
-`dsn=https://…@…ingest.sentry.io/…`, and the release build embeds it. Then
+Android SDK (the `sentry-android-core` artifact only — no native libs, no
+screen recording) but it is **inactive unless a DSN is configured**: copy
+`sentry.properties.example` to `sentry.properties` (gitignored) and replace
+`dsn=` with your own, and the release build embeds it. Then
 crashes are reported to that Sentry project, with the Wi-Fi Direct subnet
 (`192.168.49.x`) and tunnel range (`26.0.0.x`) scrubbed from messages before
 upload. Without the file, `BuildConfig.SENTRY_DSN` is empty and no crash data
