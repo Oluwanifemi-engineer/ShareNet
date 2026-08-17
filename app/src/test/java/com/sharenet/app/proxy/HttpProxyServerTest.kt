@@ -234,6 +234,41 @@ class HttpProxyServerTest {
     }
 
     @Test
+    fun `connect tunnel survives the client closing right after connect`() {
+        // Regression: when the client closes right after the 200 (the device
+        // test's `nc -w` pattern), the upstream pump's EOF-close races the
+        // downstream thread's getInputStream(). Pre-fix that threw an
+        // uncaught SocketException on a raw Thread, which kills the whole
+        // Android process. Assert no thread ever throws uncaught.
+        val uncaught = java.util.concurrent.CopyOnWriteArrayList<Throwable>()
+        val prev = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { _, t -> uncaught.add(t) }
+        try {
+            repeat(10) {
+                val origin = startOrigin { socket ->
+                    runCatching { socket.getInputStream().readBytes() }
+                }
+                val client = proxySocket()
+                val out = client.getOutputStream()
+                out.write(
+                    ("CONNECT 127.0.0.1:${origin.localPort} HTTP/1.1\r\n" +
+                        "Host: 127.0.0.1:${origin.localPort}\r\n\r\n").toByteArray(StandardCharsets.ISO_8859_1),
+                )
+                out.flush()
+                val status = readResponseHead(client)
+                assertTrue(status.contains("200 Connection Established"))
+                // The exact disconnect pattern that exposed the race:
+                client.close()
+            }
+            Thread.sleep(500)
+            assertTrue("uncaught exception(s): $uncaught", uncaught.isEmpty())
+            assertTrue(proxy.isRunning)
+        } finally {
+            Thread.setDefaultUncaughtExceptionHandler(prev)
+        }
+    }
+
+    @Test
     fun `connect to an unreachable host returns 502`() {
         // Grab a port, close it, then CONNECT there.
         val dead = ServerSocket(0)

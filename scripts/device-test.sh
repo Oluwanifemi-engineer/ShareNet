@@ -63,12 +63,27 @@ for i in $(seq 1 30); do
 done
 
 echo "==> Reading the pairing PIN from the UI (for the tunnel AUTH frame)"
-PIN=$("$ADB" shell cat /sdcard/sn2.xml | python3 -c "
+# The PIN row sits below the QR code, which is below the fold on most
+# screens — and uiautomator only dumps on-screen nodes. Scroll down, then
+# re-dump. Attribute order in the dump is not guaranteed, so parse per-node
+# (find the pinValue node, read its text) instead of one giant regex.
+PIN=""
+for i in $(seq 1 5); do
+  "$ADB" shell input swipe 360 1200 360 450 300
+  sleep 1
+  "$ADB" shell uiautomator dump /sdcard/sn3.xml >/dev/null 2>&1
+  PIN=$("$ADB" shell cat /sdcard/sn3.xml | python3 -c "
 import re, sys
 xml = sys.stdin.read()
-m = re.search(r'resource-id=\"[^\"]*pinValue\"[^>]*text=\"([0-9]+)\"', xml)
-print(m.group(1) if m else '')
+for node in re.findall(r'<node [^>]*>', xml):
+    if 'pinValue' in node:
+        m = re.search(r'text=\"([0-9]*)\"', node)
+        if m:
+            print(m.group(1))
+            break
 " 2>/dev/null | head -1)
+  [ -n "$PIN" ] && break
+done
 echo "    pairing PIN: ${PIN:-<not found>}"
 
 echo "==> Data-path test: HTTP through the proxy"

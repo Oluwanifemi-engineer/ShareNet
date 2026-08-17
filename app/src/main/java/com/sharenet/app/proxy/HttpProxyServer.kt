@@ -393,11 +393,17 @@ class HttpProxyServer(
             output.flush()
 
             val done = AtomicBoolean(false)
+            // Both directions must be fully exception-safe: when one pump ends
+            // (EOF, timeout, or the proxy stopping) it closes its stream, which
+            // closes the shared socket — the peer thread may then hit a
+            // "Socket is closed" on getInputStream()/getOutputStream() before
+            // its own pump starts. An uncaught exception on either raw Thread
+            // would crash the whole process, so swallow it here.
             val upstream = Thread {
-                pump(input, origin.getOutputStream(), stats.bytesFromClients, done)
+                runCatching { pump(input, origin.getOutputStream(), stats.bytesFromClients, done) }
             }
             val downstream = Thread {
-                pump(origin.getInputStream(), output, stats.bytesToClients, done)
+                runCatching { pump(origin.getInputStream(), output, stats.bytesToClients, done) }
             }
             upstream.start()
             downstream.start()

@@ -43,6 +43,7 @@
     <!-- A relay app should not leak the session host/PIN into cloud backups,
          and a restore could re-route traffic unexpectedly: no backup. -->
     <application
+        android:name=".ShareNetApp"
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/full_backup_content"
@@ -50,6 +51,12 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.ShareNet">
+
+        <!-- Sentry's auto-init provider would crash without a DSN; disable it
+             and let ShareNetApp init the SDK only when a DSN is configured. -->
+        <meta-data
+            android:name="io.sentry.auto-init"
+            android:value="false" />
 
         <activity
             android:name=".MainActivity"

@@ -51,12 +51,18 @@ echo "    The app opens automatically; tap 'Start sharing'."
 sleep 4
 # The uiautomator dump is a single line; pull the fields we need with a
 # regex instead of splitting on '>' (which POSIX tr would silently not do).
-ui_field() { # ui_field <xml-file> <pattern> -- prints first match
+ui_field() { # ui_field <xml-file> <resource-id-substring> -- node's text
+  # Attribute order in uiautomator dumps is not guaranteed (text may come
+  # before resource-id), so find the node by id and read its text per-node.
   "$ADB" -s "$HOST_DEV" shell cat "$1" | python3 -c "
 import re, sys
 xml = sys.stdin.read()
-m = re.search(sys.argv[1], xml)
-print(m.group(1) if m else '')
+for node in re.findall(r'<node [^>]*>', xml):
+    if sys.argv[1] in node:
+        m = re.search(r'text=\"([^\"]*)\"', node)
+        if m:
+            print(m.group(1))
+            break
 " "$2" 2>/dev/null | head -1
 }
 
@@ -80,11 +86,11 @@ SSID=""
 for i in $(seq 1 30); do
   sleep 1
   "$ADB" -s "$HOST_DEV" shell uiautomator dump /sdcard/sn2.xml >/dev/null 2>&1
-  SSID=$(ui_field /sdcard/sn2.xml 'text="(DIRECT-[^"]*)"')
+  SSID=$(ui_field /sdcard/sn2.xml 'DIRECT-')
   [ -n "$SSID" ] && break
 done
 # The same live dump also holds the passphrase and proxy values.
-PASS=$(ui_field /sdcard/sn2.xml 'resource-id="[^"]*passphraseValue"[^>]*text="([^"]*)"')
+PASS=$(ui_field /sdcard/sn2.xml 'passphraseValue')
 if [ -z "$SSID" ]; then echo "    group did not appear in time."; exit 1; fi
 echo "    Host network: $SSID  (password: $PASS)"
 

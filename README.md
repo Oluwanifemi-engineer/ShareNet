@@ -48,8 +48,6 @@ tunnel (UDP *and* TCP) — is shipped in this repo as **client mode**.
 
 ## 3. How ShareNet works
 
-## 3. How ShareNet works
-
 ```
 MainActivity ──▶ ShareController / TunnelController (pure state machines, tested)
                       │
@@ -145,7 +143,7 @@ app/src/main/java/com/sharenet/app/
 └── util/
     ├── Permissions.kt       # NEARBY_WIFI_DEVICES (13+) / location (≤12)
     └── NetworkInfo.kt       # "HomeWiFi (Wi-Fi)" / "Cellular data" + DNS servers
-app/src/test/…               # 72 JVM tests: proxy, relay, DNS, TCP stack, codec, policy, state machines
+app/src/test/…               # 78 JVM tests: proxy, relay, DNS, TCP stack, codec, policy, auth, state machines
 app/src/androidTest/…        # device smoke test (./gradlew connectedDebugAndroidTest)
 scripts/
     ├── device-test.sh       # single-device host smoke test (adb, incl. PIN auth)
@@ -153,16 +151,16 @@ scripts/
 ```
 
 Stack: Kotlin 2.0.21 · AGP 8.10.1 · Gradle 8.12 · minSdk 24 · target/compileSdk 36 ·
-Material 3 + AppCompat + core-ktx + ZXing (QR). Versions live in a Gradle
-version catalog (`gradle/libs.versions.toml`); CI runs tests + lint on every
-push (`.github/workflows/ci.yml`).
+Material 3 + AppCompat + core-ktx + ZXing (QR) + Sentry (crash reporting,
+opt-in). Versions live in a Gradle version catalog (`gradle/libs.versions.toml`);
+CI runs tests + lint on every push (`.github/workflows/ci.yml`).
 
 ## 5. Build & install
 
 ```bash
 cd ~/Projects/ShareNet
 JAVA_HOME=~/jdk21 ./gradlew :app:assembleDebug        # APK in app/build/outputs/apk/debug/
-JAVA_HOME=~/jdk21 ./gradlew :app:testDebugUnitTest    # 72 JVM tests
+JAVA_HOME=~/jdk21 ./gradlew :app:testDebugUnitTest    # 78 JVM tests
 JAVA_HOME=~/jdk21 ./gradlew :app:lintDebug            # lint gate
 JAVA_HOME=~/jdk21 ./gradlew :app:assembleRelease      # signed release (see docs/PLAY-STORE.md)
 JAVA_HOME=~/jdk21 ./gradlew :app:connectedDebugAndroidTest  # device smoke test
@@ -252,11 +250,29 @@ liveness + sticky service restart · RTO backoff · CI + version catalog.
   credential copy buttons, client mode card, OS-settings deep link.
 -On-device testing caught and fixed: P2P broadcast receivers needing
 `RECEIVER_EXPORTED` on Android 13, `createGroup` BUSY retries, the resolver
-picking the upstream `wlan0` address, and a notification format crash
-(`%d`/String arg order).
+picking the upstream `wlan0` address, a notification format crash
+(`%d`/String arg order), and an **uncaught `SocketException` in the proxy's
+CONNECT tunnel** — when a client closed right after `200 Connection
+Established`, the upstream pump's socket close could race the downstream
+thread's `getInputStream()` and crash the whole process (regression-tested).
+- Field test also verified live on-device: the tunnel refuses an unauthenticated
+  client with the exact `AUTH_REJECTED` frame (empty PIN → 5-byte rejection),
+  confirming the pairing gate works over the real Wi-Fi Direct link.
 
 ## 10. Privacy
 
 ShareNet collects nothing, stores nothing, and sends nothing anywhere except
 the traffic you explicitly share through your own phone. See
 `docs/PRIVACY-POLICY.md` and the in-app **About → Privacy policy** card.
+
+**Crash reporting (optional, off by default).** The app bundles the Sentry
+Android SDK but it is **inactive unless a DSN is configured**: drop
+`sentry.properties` (gitignored) next to `keystore.properties` with a line
+`dsn=https://…@…ingest.sentry.io/…`, and the release build embeds it. Then
+crashes are reported to that Sentry project, with the Wi-Fi Direct subnet
+(`192.168.49.x`) and tunnel range (`26.0.0.x`) scrubbed from messages before
+upload. Without the file, `BuildConfig.SENTRY_DSN` is empty and no crash data
+leaves the device. (Adding the Sentry Gradle plugin later enables symbol
+upload for readable stack traces; the DSN-only setup still captures crashes.)
+Sentry's auto-init provider is disabled in the manifest; the app initializes
+the SDK itself only when a DSN is present.

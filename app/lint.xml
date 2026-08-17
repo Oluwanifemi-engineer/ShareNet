@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Intentional lint suppressions for ShareNet. Every entry here documents a
+    deliberate decision — nothing is silenced by accident.
+-->
+<lint>
+    <!--
+        InlinedApi — FOREGROUND_SERVICE_TYPE_* constants (ServiceInfo
+        FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE / _SPECIAL_USE) are
+        compile-time inlined ints, so referencing them with minSdk 24 cannot
+        crash on old devices. The runtime call goes through
+        ServiceCompat.startForeground(), which only forwards the type on the
+        API it exists for and falls back to the two-arg form below. Lint's
+        warning is a false positive for this usage pattern.
+    -->
+    <issue id="InlinedApi">
+        <ignore path="src/main/java/com/sharenet/app/ShareService.kt" />
+        <ignore path="src/main/java/com/sharenet/app/tunnel/TunnelVpnService.kt" />
+    </issue>
+
+    <!--
+        GradleDependency / AndroidGradlePluginVersion — the Gradle 8.12 +
+        AGP 8.10.1 toolchain and the androidx dependency set are pinned
+        deliberately: they were verified together as one unit (build, lint,
+        tests, R8 release build) and this is a pre-launch freeze. Upgrading
+        AGP to 9.x is a breaking change (new DSL, built-in Kotlin) planned as
+        a post-launch task; the newer androidx releases will ride along with
+        it. Revisit these pins after launch.
+    -->
+    <issue id="GradleDependency" severity="ignore" />
+    <issue id="AndroidGradlePluginVersion" severity="ignore" />
+</lint>

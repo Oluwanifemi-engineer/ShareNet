@@ -19,8 +19,15 @@ your phone.
 
 ShareNet does **not** collect, transmit, or store any personal data:
 
-- No accounts, no sign‑in, no analytics, no crash reports sent to us, no
-  advertising identifiers are used.
+- No accounts, no sign‑in, no analytics, no advertising identifiers are used.
+- **Crash reporting is opt‑in and off by default.** The app bundles the
+  Sentry Android SDK but it is inactive unless the developer configures a
+  Sentry DSN at build time; without that configuration no crash data is sent
+  to anyone. When configured (release builds only, as the developer ships
+  them), crash reports are sent to the developer's Sentry project and may
+  contain device model, OS version, and stack traces; the app scrubs
+  Wi‑Fi Direct session addresses (`192.168.49.x`, `26.0.0.x`) from report
+  content before upload.
 - The app never reads your location. On older Android versions (12 and
   below) Android itself requires a location permission to use Wi‑Fi Direct;
   ShareNet declares it only because the platform demands it and never reads

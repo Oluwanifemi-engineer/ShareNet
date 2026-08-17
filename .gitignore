@@ -13,3 +13,6 @@
 /keystore.properties
 *.jks
 *.keystore
+
+# Crash reporting DSN — never commit the account identifier.
+/sentry.properties

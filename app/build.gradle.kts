@@ -13,6 +13,16 @@ val keystoreProps = Properties().apply {
     if (f.exists()) f.inputStream().use { load(it) }
 }
 
+// Crash reporting DSN is read from sentry.properties (gitignored). Empty by
+// default: the app then runs without any crash reporting, so the build and
+// the app never require an account.
+val sentryProps = Properties().apply {
+    val f = rootProject.file("sentry.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+val sentryDsn = (sentryProps.getProperty("dsn") ?: "").trim()
+    .replace("\\", "\\\\").replace("\"", "\\\"")
+
 android {
     namespace = "com.sharenet.app"
     compileSdk = 36
@@ -62,6 +72,11 @@ android {
         buildConfig = true // exposes BuildConfig.VERSION_NAME to the About screen
     }
 
+    defaultConfig {
+        // Empty until the developer drops a DSN into sentry.properties.
+        buildConfigField("String", "SENTRY_DSN", "\"$sentryDsn\"")
+    }
+
     testOptions {
         unitTests.isReturnDefaultValues = true
     }
@@ -72,6 +87,7 @@ dependencies {
     implementation(libs.androidx.appcompat)
     implementation(libs.material)
     implementation(libs.zxing.core) // QR rendering for the join-info code
+    implementation(libs.sentry.android) // crash reporting, opt-in via DSN
 
     // JVM unit tests only — the HTTP proxy and state machine are pure Kotlin
     // with zero Android imports, so they run fast on the plain JVM.
@@ -80,4 +96,5 @@ dependencies {
     // Instrumented smoke test (device/emulator): `./gradlew connectedDebugAndroidTest`.
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.runner)
 }
