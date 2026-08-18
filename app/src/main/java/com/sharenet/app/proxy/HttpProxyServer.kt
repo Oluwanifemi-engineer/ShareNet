@@ -184,17 +184,27 @@ class HttpProxyServer(
         input: InputStream,
         output: OutputStream,
     ): Boolean {
-        val path = request.path.lowercase()
+        val path = request.path
         // Use the actual bound port, not the request port (which defaults to 80)
         val host = request.host
         val portNum = boundPort
         val proxyAddr = "$host:$portNum"
 
+        // Absolute-form requests (GET http://example.com/ ...) are proxy
+        // requests from configured clients — forward them to the internet.
+        // Only intercept origin-form requests (GET / ...) from unconfigured
+        // browsers.
+        if (request.absoluteTarget) {
+            // This is a properly configured proxy request — forward it
+            return handleHttp(request, input, output)
+        }
+
+        val lowerPath = path.lowercase()
         when {
-            path == "/proxy.pac" || path.endsWith("/proxy.pac?") -> {
+            lowerPath == "/proxy.pac" || lowerPath.endsWith("/proxy.pac?") -> {
                 servePacFile(output, host, portNum)
             }
-            path == "/setup" || path.endsWith("/setup?") -> {
+            lowerPath == "/setup" || lowerPath.endsWith("/setup?") -> {
                 serveSetupPage(output, proxyAddr)
             }
             else -> {
@@ -268,6 +278,9 @@ class HttpProxyServer(
         val keepAlive: Boolean,
         val contentLength: Long,
         val chunked: Boolean,
+        /** True when the original request target was an absolute URL
+         *  (e.g. GET http://example.com/path). */
+        val absoluteTarget: Boolean = false,
     )
 
     private fun parseRequest(head: List<String>): Request? {
@@ -336,6 +349,11 @@ class HttpProxyServer(
             path = if (uri.rawPath.isNullOrEmpty()) "/" else {
                 uri.rawPath + (uri.rawQuery?.let { "?$it" } ?: "")
             }
+            return Request(
+                RequestKind.PLAIN, method, host, port, path, version,
+                headers, keepAlive, contentLength, chunked,
+                absoluteTarget = true,
+            )
         } else {
             // Origin-form: the target is the path; the Host header has the host.
             val hostHeader = headers
@@ -712,9 +730,11 @@ class HttpProxyServer(
             |
             |  <div class="card">
             |    <h2>⚡ Quick Setup (Recommended)</h2>
-            |    <p style="margin-bottom:12px">Click the link below to auto-configure your browser:</p>
-            |    <a class="btn" href="{{PAC_URL}}">Auto-Configure Proxy</a>
-            |    <p class="note">This opens a proxy auto-config file. Your browser will ask to confirm — click OK/Allow.</p>
+            |    <p style="margin-bottom:12px">Copy and paste this command in a terminal to auto-configure:</p>
+            |    <div style="background:#1a2a1a;border:1px solid #2e7d32;border-radius:8px;padding:12px 16px;margin-top:8px;">
+            |      <code style="font-size:0.85em;color:#81c784;word-break:break-all;">gsettings set org.gnome.system.proxy mode 'manual' && gsettings set org.gnome.system.proxy.http host '192.168.49.1' && gsettings set org.gnome.system.proxy.http port 8080 && gsettings set org.gnome.system.proxy.https host '192.168.49.1' && gsettings set org.gnome.system.proxy.https port 8080</code>
+            |    </div>
+            |    <p class="note" style="margin-top:8px">For Firefox: Settings → General → Network Settings → Manual proxy → <code>192.168.49.1:8080</code></p>
             |  </div>
             |
             |  <div class="card">
