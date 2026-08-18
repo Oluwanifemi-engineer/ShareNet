@@ -58,6 +58,7 @@ class ShareService : Service() {
     private var sessionActive = false
     private var lastUpstream: String? = null
     private var sessionPin: String? = null
+    private var nativeHotspot: NativeHotspotManager? = null
 
     // Bind-retry runnables are tracked so a stop/fail during the retry window
     // cancels them — otherwise a retry could fire after teardown, bind a
@@ -144,9 +145,42 @@ class ShareService : Service() {
             ShareEvent.UpstreamChanged(lastUpstream ?: getString(R.string.upstream_none)),
         )
 
-        val manager = WifiDirectManager(this)
-        wifiDirect = manager
-        manager.start(wifiListener)
+        // Detect device capabilities to communicate what clients can connect
+        val capabilities = DeviceCapabilityDetector(this).report
+        log("device capability: ${capabilities.capability} — ${capabilities.clientCompatibility}")
+        ShareController.dispatch(ShareEvent.CapabilityDetected(capabilities.capability))
+
+        // Try native hotspot first — works with ALL devices (PC, phone, tablet)
+        // without requiring proxy configuration. Falls back to Wi-Fi Direct.
+        val hotspot = NativeHotspotManager(this)
+        nativeHotspot = hotspot
+        if (hotspot.isAvailable) {
+            log("native hotspot available, trying first")
+            hotspot.start(object : NativeHotspotManager.Listener {
+                override fun onHotspotStarted(ssid: String, password: String) {
+                    log("native hotspot started: $ssid")
+                    ShareController.dispatch(
+                        ShareEvent.GroupCreated(ssid, password),
+                    )
+                    sessionPin?.let { ShareController.dispatch(ShareEvent.PinGenerated(it)) }
+                    // No proxy needed — the OS handles NAT for native hotspot.
+                    // Start DNS and relay services on the hotspot interface.
+                    startRelayWithRetry(attemptsLeft = RELAY_BIND_RETRIES, host = "0.0.0.0")
+                }
+
+                override fun onHotspotFailed(reason: String) {
+                    log("native hotspot failed: $reason — falling back to Wi-Fi Direct")
+                    startWifiDirect()
+                }
+
+                override fun onHotspotStopped() {
+                    fail("Hotspot stopped")
+                }
+            })
+        } else {
+            log("native hotspot not available, using Wi-Fi Direct")
+            startWifiDirect()
+        }
     }
 
     /** Bind can race the P2P interface coming up; retry a few times. */
@@ -306,11 +340,19 @@ class ShareService : Service() {
 
     // ── Stop / fail ─────────────────────────────────────────────────────────
 
+    private fun startWifiDirect() {
+        val manager = WifiDirectManager(this)
+        wifiDirect = manager
+        manager.start(wifiListener)
+    }
+
     private fun stopSharing() {
         if (!sessionActive) return
         sessionActive = false
         sessionPin = null
         ShareController.dispatch(ShareEvent.StopRequested)
+        nativeHotspot?.stop()
+        nativeHotspot = null
         teardown()
         ShareController.dispatch(ShareEvent.Stopped)
         stopForegroundCompat()
@@ -342,6 +384,8 @@ class ShareService : Service() {
         dns = null
         tcpRelay?.stop()
         tcpRelay = null
+        nativeHotspot?.stop()
+        nativeHotspot = null
         wifiDirect?.stop()
         wifiDirect = null
     }

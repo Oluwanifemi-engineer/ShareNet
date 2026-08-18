@@ -33,6 +33,8 @@ data class PendingInfo(
     val passphrase: String,
     val upstream: String,
     val pin: String? = null,
+    val capability: DeviceCapabilityDetector.SharingCapability =
+        DeviceCapabilityDetector.SharingCapability.P2P_ONLY,
 )
 
 data class ShareInfo(
@@ -48,8 +50,20 @@ data class ShareInfo(
     val pin: String? = null,
     /** Live traffic counters, refreshed by the service tick. */
     val stats: TrafficStats? = null,
+    /** Device capability: what types of clients can connect. */
+    val capability: DeviceCapabilityDetector.SharingCapability =
+        DeviceCapabilityDetector.SharingCapability.P2P_ONLY,
 ) {
     val proxyAddress: String get() = "$proxyHost:$proxyPort"
+
+    val clientCompatibilitySummary: String get() = when (capability) {
+        DeviceCapabilityDetector.SharingCapability.NATIVE_HOTSPOT ->
+            "PC ✓  Phone ✓  Tablet ✓  Smart TV ✓"
+        DeviceCapabilityDetector.SharingCapability.P2P_ONLY ->
+            "Phone (with app) ✓  Phone (no app) ⚠  PC ✗  Tablet ✗"
+        DeviceCapabilityDetector.SharingCapability.NONE ->
+            "No devices"
+    }
 }
 
 sealed interface ShareEvent {
@@ -64,6 +78,9 @@ sealed interface ShareEvent {
     data object StopRequested : ShareEvent
     data object Stopped : ShareEvent
     data class Failed(val message: String) : ShareEvent
+    data class CapabilityDetected(
+        val capability: DeviceCapabilityDetector.SharingCapability,
+    ) : ShareEvent
 }
 
 object ShareReducer {
@@ -80,6 +97,8 @@ object ShareReducer {
                     ssid = event.ssid,
                     passphrase = event.passphrase,
                     upstream = state.pending?.upstream ?: "",
+                    capability = state.pending?.capability
+                        ?: DeviceCapabilityDetector.SharingCapability.P2P_ONLY,
                 ),
             )
             else -> state
@@ -115,6 +134,7 @@ object ShareReducer {
                             proxyPort = event.port,
                             upstream = pending.upstream,
                             pin = pending.pin,
+                            capability = pending.capability,
                         ),
                     )
                 }
@@ -145,5 +165,12 @@ object ShareReducer {
         ShareEvent.Stopped -> ShareState.Idle
 
         is ShareEvent.Failed -> ShareState.Failed(event.message)
+
+        is ShareEvent.CapabilityDetected -> when (state) {
+            is ShareState.Starting -> state.copy(
+                pending = state.pending?.copy(capability = event.capability),
+            )
+            else -> state
+        }
     }
 }
