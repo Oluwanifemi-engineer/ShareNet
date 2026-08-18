@@ -227,8 +227,10 @@ liveness + sticky service restart · RTO backoff · CI + version catalog.
 1. **Play distribution.** Everything is staged in `docs/PLAY-STORE.md`
    (signing, Data Safety answers, permission declarations); the actual upload
    needs a Play Console account and a hosted privacy-policy URL.
-2. **Two-device automation.** `scripts/two-device-test.sh` drives everything
-   that adb can; joining the DIRECT network still needs one tap on the client.
+2. **Two-device automation.** `scripts/two-device-test.sh` now drives the
+   client's join too: it taps the `DIRECT-…` network in Wi-Fi settings, types
+   the passphrase, fills in the pairing PIN, and confirms the VPN dialog via
+   adb UI automation — with manual fallbacks when a device/ROM resists.
 3. **ICMP relay** for ping through tunnel mode (needs a privileged socket).
 4. **Fast retransmit** in `TcpTunnelCore` (dup-ACK driven) once a second
    device is on hand; RTO now backs off exponentially.
