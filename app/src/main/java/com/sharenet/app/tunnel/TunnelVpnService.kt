@@ -47,15 +47,19 @@ import java.util.concurrent.atomic.AtomicLong
  * default route, so proxy connections to 192.168.49.1:8080 bypass the tunnel
  * entirely and keep working.
  *
- * What still does not work: ICMP (ping) — relaying it needs a raw socket.
+ * ICMP (ping) rides a second UDP carrier to the host's IcmpRelayServer,
+ * which sends it out through a rootless kernel ping socket and returns the
+ * replies as full IPv4 packets injected back into this tun.
  */
 class TunnelVpnService : VpnService() {
 
     private val running = AtomicBoolean(false)
     private val udpForwarded = AtomicLong(0)
     private val tcpForwarded = AtomicLong(0)
+    private val icmpForwarded = AtomicLong(0)
     private val otherDropped = AtomicLong(0)
     private val repliesReceived = AtomicLong(0)
+    private val icmpRepliesReceived = AtomicLong(0)
 
     // TcpTunnelClient's reader thread calls back when the control socket
     // dies; we must surface that on the main thread or the user would keep
@@ -64,9 +68,11 @@ class TunnelVpnService : VpnService() {
 
     private var fd: ParcelFileDescriptor? = null
     private var tunnelSocket: DatagramSocket? = null
+    private var icmpSocket: DatagramSocket? = null
     private var tcpTunnel: TcpTunnelClient? = null
     private var readThread: Thread? = null
     private var writeThread: Thread? = null
+    private var icmpWriteThread: Thread? = null
     private var activeHost: String? = null
     private var tunOut: FileOutputStream? = null
     private val tunWriteLock = Any()
@@ -134,8 +140,22 @@ class TunnelVpnService : VpnService() {
             return
         }
 
+        // ICMP rides its own protected UDP carrier to the host's relay.
+        val icmp = try {
+            DatagramSocket().also {
+                protect(it)
+                it.connect(InetSocketAddress(host, TunnelProtocol.ICMP_RELAY_PORT))
+            }
+        } catch (e: Exception) {
+            runCatching { pfd.close() }
+            runCatching { socket.close() }
+            fail(getString(R.string.tunnel_error_socket))
+            return
+        }
+
         fd = pfd
         tunnelSocket = socket
+        icmpSocket = icmp
         activeHost = host
 
         // The TCP tunnel rides its own reliable control connection (bypassing
@@ -170,6 +190,10 @@ class TunnelVpnService : VpnService() {
             name = "sharenet-tun-write"
             isDaemon = true
         }.also { it.start() }
+        icmpWriteThread = Thread { icmpWriteLoop() }.apply {
+            name = "sharenet-tun-icmp-write"
+            isDaemon = true
+        }.also { it.start() }
     }
 
     private fun writeToTun(packet: ByteArray) {
@@ -183,11 +207,12 @@ class TunnelVpnService : VpnService() {
         }
     }
 
-    /** tun -> host: UDP via the relay, TCP via the tunnel core. */
+    /** tun -> host: UDP via the relay, TCP via the tunnel core, ICMP via its carrier. */
     private fun readLoop() {
         val pfd = fd ?: return
         val tunIn = FileInputStream(pfd.fileDescriptor)
         val socket = tunnelSocket ?: return
+        val icmp = icmpSocket ?: return
         val buf = ByteArray(MTU + 64)
         while (running.get()) {
             val n = try {
@@ -208,6 +233,14 @@ class TunnelVpnService : VpnService() {
                 Ipv4Codec.PROTO_TCP -> {
                     tcpTunnel?.onIpPacket(buf, n)
                     tcpForwarded.incrementAndGet()
+                }
+                Ipv4Codec.PROTO_ICMP -> {
+                    try {
+                        icmp.send(DatagramPacket(buf, n))
+                        icmpForwarded.incrementAndGet()
+                    } catch (_: Exception) {
+                        break
+                    }
                 }
                 else -> otherDropped.incrementAndGet()
             }
@@ -242,10 +275,40 @@ class TunnelVpnService : VpnService() {
         }
     }
 
+    /** host -> tun: inject ICMP reply packets (full IPv4) into the tun. */
+    private fun icmpWriteLoop() {
+        val out = tunOut ?: return
+        val socket = icmpSocket ?: return
+        val buf = ByteArray(MTU + 64)
+        while (running.get()) {
+            val packet = DatagramPacket(buf, buf.size)
+            try {
+                socket.receive(packet)
+            } catch (e: SocketException) {
+                break
+            } catch (_: Exception) {
+                if (!running.get()) break
+                continue
+            }
+            if (packet.length <= 0) continue
+            synchronized(tunWriteLock) {
+                try {
+                    out.write(packet.data, 0, packet.length)
+                    out.flush()
+                    icmpRepliesReceived.incrementAndGet()
+                } catch (_: Exception) {
+                    return@icmpWriteLoop
+                }
+            }
+        }
+    }
+
     private fun stopTunnel() {
         if (!running.getAndSet(false)) return
         runCatching { tunnelSocket?.close() }
         tunnelSocket = null
+        runCatching { icmpSocket?.close() }
+        icmpSocket = null
         tcpTunnel?.stop()
         tcpTunnel = null
         runCatching { fd?.close() }
@@ -265,6 +328,8 @@ class TunnelVpnService : VpnService() {
             if (running.getAndSet(false)) {
                 runCatching { tunnelSocket?.close() }
                 tunnelSocket = null
+                runCatching { icmpSocket?.close() }
+                icmpSocket = null
                 tcpTunnel?.stop()
                 tcpTunnel = null
                 runCatching { fd?.close() }
@@ -295,6 +360,8 @@ class TunnelVpnService : VpnService() {
         if (running.getAndSet(false)) {
             runCatching { tunnelSocket?.close() }
             tunnelSocket = null
+            runCatching { icmpSocket?.close() }
+            icmpSocket = null
             tcpTunnel?.stop()
             tcpTunnel = null
             runCatching { fd?.close() }

@@ -135,6 +135,68 @@ print(f"    tunnel frames: {len(out)} bytes; HTTP response: {'OK' if ok else 'MI
 print("    TCP tunnel relay: ", "PASS" if ok else "FAIL")
 PY
 
+echo "==> Data-path test: ICMP relay (ping) on 192.168.49.1:5566"
+# Craft an ICMP echo request exactly as a tunnel-mode client would, UDP it to
+# the relay, and expect a full IPv4 ICMP echo reply back (type 0, id echoed).
+# The host sends it out via a rootless kernel ping socket.
+export SHARENET_ICMP_PORT="$([ -n "${ICMP_PORT:-}" ] && echo "$ICMP_PORT" || echo 5566)"
+python3 - "$ADB" "$SHARENET_ICMP_PORT" <<'PY'
+import struct, subprocess, sys
+adb, port = sys.argv[1], int(sys.argv[2])
+
+def icmp_checksum(data: bytes) -> int:
+    if len(data) % 2:
+        data += b"\x00"
+    s = sum(struct.unpack(">%dH" % (len(data) // 2), data))
+    while s >> 16:
+        s = (s & 0xFFFF) + (s >> 16)
+    return (~s) & 0xFFFF
+
+def ip_packet(src: str, dst: str, proto: int, payload: bytes) -> bytes:
+    src_b = bytes(map(int, src.split(".")))
+    dst_b = bytes(map(int, dst.split(".")))
+    total = 20 + len(payload)
+    hdr = bytearray(20)
+    hdr[0] = 0x45
+    hdr[2:4] = struct.pack(">H", total)
+    hdr[8] = 64
+    hdr[9] = proto
+    hdr[12:16] = src_b
+    hdr[16:20] = dst_b
+    c = icmp_checksum(bytes(hdr))
+    hdr[10:12] = struct.pack(">H", c)
+    return bytes(hdr) + payload
+
+def icmp_echo(ident: int, seq: int, data: bytes) -> bytes:
+    body = struct.pack(">BBHHH", 8, 0, 0, ident, seq) + data
+    body = body[:2] + struct.pack(">H", icmp_checksum(body)) + body[4:]
+    return body
+
+candidates = ["1.1.1.1", "8.8.8.8", "104.20.23.154"]  # last = example.com fallback
+ok = False
+for dst in candidates:
+    pkt = ip_packet("26.0.0.2", dst, 1, icmp_echo(0xBEEF, 1, b"sharenet"))
+    open("/tmp/sharenet_icmp", "wb").write(pkt)
+    subprocess.run([adb, "push", "/tmp/sharenet_icmp", "/data/local/tmp/sharenet_icmp"],
+                   check=True, capture_output=True)
+    subprocess.run([adb, "shell",
+                    f"timeout 8 nc -u -w 4 192.168.49.1 {port} < /data/local/tmp/sharenet_icmp > /data/local/tmp/sharenet_icmp_out"],
+                   capture_output=True)
+    subprocess.run([adb, "pull", "/data/local/tmp/sharenet_icmp_out", "/tmp/sharenet_icmp_out"],
+                   capture_output=True)
+    raw = open("/tmp/sharenet_icmp_out", "rb").read()
+    if len(raw) >= 28 and raw[9] == 1:  # IPv4, protocol ICMP
+        icmp = raw[20:]
+        if len(icmp) >= 8 and icmp[0] == 0 and struct.unpack(">H", icmp[4:6])[0] == 0xBEEF:
+            src = ".".join(str(b) for b in raw[12:16])
+            print(f"    ICMP echo reply from {src} (type 0, id 0xBEEF)")
+            ok = True
+            break
+print("    ICMP relay: ", "PASS" if ok else "FAIL")
+if not ok:
+    sys.exit(1)
+PY
+
 echo "==> Stopping sharing"
 # The service is not exported, so the shell cannot send it the STOP action;
 # force-stop is the reliable equivalent (it cannot miss like a UI tap can on

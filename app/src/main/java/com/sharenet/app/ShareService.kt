@@ -18,6 +18,8 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.sharenet.app.proxy.DnsForwarder
 import com.sharenet.app.proxy.HttpProxyServer
+import com.sharenet.app.proxy.IcmpRelayServer
+import com.sharenet.app.proxy.OsPingSocket
 import com.sharenet.app.proxy.P2pAddressResolver
 import com.sharenet.app.proxy.ProxyBindException
 import com.sharenet.app.proxy.ProxyStats
@@ -50,6 +52,7 @@ class ShareService : Service() {
     private var wifiDirect: WifiDirectManager? = null
     private var proxy: HttpProxyServer? = null
     private var relay: UdpRelayServer? = null
+    private var icmpRelay: IcmpRelayServer? = null
     private var dns: DnsForwarder? = null
     private var tcpRelay: TcpTunnelServer? = null
     private var sessionActive = false
@@ -177,6 +180,7 @@ class ShareService : Service() {
             candidate.start()
             relay = candidate
             ShareController.dispatch(ShareEvent.RelayStarted(candidate.boundPort))
+            startIcmpRelay(host)
             startDns(host)
             startTcpRelay(host)
             refreshNotification()
@@ -220,6 +224,27 @@ class ShareService : Service() {
             log("dns forwarder up on $host:$DNS_PORT")
         } catch (e: ProxyBindException) {
             log("dns forwarder failed to bind (non-fatal): ${e.message}")
+        }
+    }
+
+    /**
+     * ICMP (ping) relay for client phones in tunnel mode — rootless via
+     * kernel ping sockets ([OsPingSocket]). Best-effort: if the kernel
+     * refuses ping sockets the relay still binds and just drops, which is
+     * the pre-ICMP behavior.
+     */
+    private fun startIcmpRelay(host: String) {
+        try {
+            val candidate = IcmpRelayServer(
+                host,
+                TunnelProtocol.ICMP_RELAY_PORT,
+                pingSocketFactory = { id -> OsPingSocket.create(id) },
+            ) { msg -> log("icmp-relay: $msg") }
+            candidate.start()
+            icmpRelay = candidate
+            log("icmp relay up on $host:${candidate.boundPort}")
+        } catch (e: ProxyBindException) {
+            log("icmp relay failed to bind (non-fatal): ${e.message}")
         }
     }
 
@@ -311,6 +336,8 @@ class ShareService : Service() {
         proxy = null
         relay?.stop()
         relay = null
+        icmpRelay?.stop()
+        icmpRelay = null
         dns?.stop()
         dns = null
         tcpRelay?.stop()

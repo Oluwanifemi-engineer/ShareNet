@@ -14,6 +14,10 @@ object TunnelProtocol {
 
     const val TCP_PORT = 7777
 
+    // UDP carrier port for ICMP (ping) in tunnel mode: client phones send
+    // their captured ICMP echo packets here (host: IcmpRelayServer).
+    const val ICMP_RELAY_PORT = 5566
+
     // Client -> host
     const val TYPE_CONNECT = 1    // payload: dst IPv4 (4) + dst port (2)
     const val TYPE_DATA = 2       // payload: app bytes

@@ -195,13 +195,20 @@ and run — the SDK/AGP/Gradle versions match the local toolchain.
 3. Set the HTTP proxy as above for TCP. UDP (games, calls) now works too.
 
 Browsing, email, chat, and most apps work immediately. With the client
-phone's tunnel on, even apps that ignore the proxy work — the only thing
-tunnel mode still drops is ICMP (ping), which needs a raw socket.
+phone's tunnel on, even apps that ignore the proxy work — TCP, UDP, and
+**ICMP (ping)** all flow through the tunnel. ICMP uses rootless kernel
+ping sockets on the host (`OsPingSocket`): no raw socket, no root.
+
+**Android shows "Connected, no internet"** on the client — this is
+Android's captive-portal check running *without* the HTTP proxy. Once the
+client sets its proxy to `192.168.49.1:8080`, real traffic flows and the
+banner is cosmetic (harmless on most ROMs).
 
 ## 7. Honest limitations & notes
 
-- **ICMP still dropped in tunnel mode.** Ping needs a raw socket (root);
-  everything else — TCP *and* UDP — flows through the tunnel.
+- **ICMP (ping) in tunnel mode.** Now relayed via rootless kernel ping
+  sockets (`IcmpRelayServer` + `OsPingSocket`). Falls back to dropping
+  silently if an OEM kernel refuses ping sockets.
 - **One radio, one channel.** The P2P group shares the Wi-Fi radio with the
   upstream connection; throughput is reduced and some devices briefly drop the
   upstream when the group forms (NetShare has the same behavior).
@@ -218,12 +225,13 @@ tunnel mode still drops is ICMP (ping), which needs a raw socket.
 
 ## 8. Roadmap
 
-Done so far: host sharing (Tier 1) · full tunnel client mode (UDP + TCP, Tier 2) ·
-DNS for P2P clients · OS Wi-Fi Sharing tip card · premium M3 UI with dark mode ·
-pairing-PIN client auth · SSRF/LAN destination policy · live traffic stats ·
-QR join code · privacy policy (in-app + `docs/PRIVACY-POLICY.md`) · heartbeat
-liveness + sticky service restart · RTO backoff + dup-ACK fast retransmit ·
-CI + version catalog. Validation status is tracked in `docs/VALIDATION.md`.
+Done so far: host sharing (Tier 1) · full tunnel client mode (UDP + TCP + ICMP,
+Tier 2) · DNS for P2P clients · OS Wi-Fi Sharing tip card · premium M3 UI with
+dark mode · pairing-PIN client auth · SSRF/LAN destination policy · live traffic
+stats · QR join code · privacy policy (in-app + `docs/PRIVACY-POLICY.md`) ·
+heartbeat liveness + sticky service restart · RTO backoff + dup-ACK fast
+retransmit · rootless ICMP relay via kernel ping sockets · CI + version
+catalog. Validation status is tracked in `docs/VALIDATION.md`.
 
 1. **Play distribution.** Staged in `docs/PLAY-STORE.md` (signing, Data
    Safety answers, permission declarations) but **parked**: nothing ships

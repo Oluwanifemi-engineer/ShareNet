@@ -40,6 +40,45 @@ class Ipv4CodecTest {
     }
 
     @Test
+    fun `wraps an icmp packet with a valid header checksum`() {
+        val icmp = byteArrayOf(0, 0, 0, 0, 0xBE.toByte(), 0xEF.toByte(), 0, 1, 1, 2, 3)
+        val packet = Ipv4Codec.wrapIcmp(
+            srcIp = "1.1.1.1",
+            dstIp = "26.0.0.2",
+            payload = icmp,
+        )
+
+        val parsed = Ipv4Codec.parse(packet)!!
+        assertEquals("1.1.1.1", parsed.srcIp)
+        assertEquals("26.0.0.2", parsed.dstIp)
+        assertEquals(Ipv4Codec.PROTO_ICMP, parsed.protocol)
+        assertEquals(Ipv4Codec.HEADER_LEN, parsed.payloadOffset)
+        assertEquals(icmp.size, parsed.payloadLength)
+
+        // Header checksum is valid: zero it and recompute.
+        val stored = Ipv4Codec.read16(packet, 10)
+        packet[10] = 0
+        packet[11] = 0
+        assertEquals(stored, Ipv4Codec.checksum(packet, 0, Ipv4Codec.HEADER_LEN))
+
+        // ICMP payload rides verbatim after the IP header.
+        assertEquals(
+            icmp.toList(),
+            packet.copyOfRange(Ipv4Codec.HEADER_LEN, packet.size).toList(),
+        )
+    }
+
+    @Test
+    fun `icmp checksum is verifiable and returns zero over the whole message`() {
+        // Echo request with a computed checksum; the full-message sum must fold to 0.
+        val icmp = byteArrayOf(8, 0, 0, 0, 0x12, 0x34, 0, 1, 9, 9, 9)
+        val sum = Ipv4Codec.icmpChecksum(icmp)
+        icmp[2] = (sum shr 8).toByte()
+        icmp[3] = (sum and 0xFF).toByte()
+        assertEquals(0, Ipv4Codec.icmpChecksum(icmp))
+    }
+
+    @Test
     fun `header checksum verifies`() {
         val packet = Ipv4Codec.wrapUdp("10.0.0.1", 1000, "10.0.0.2", 2000, byteArrayOf(1, 2, 3))
         val stored = Ipv4Codec.read16(packet, 10)

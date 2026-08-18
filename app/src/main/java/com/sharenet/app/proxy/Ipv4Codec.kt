@@ -105,6 +105,41 @@ object Ipv4Codec {
         return pkt
     }
 
+    /**
+     * Builds an ICMP (protocol 1) IPv4 packet with a computed header checksum.
+     * The [icmpPayload] must already carry a valid ICMP checksum (echo replies
+     * arrive checksummed from the remote). Used by the ICMP relay to return
+     * replies into the client's tun interface.
+     */
+    fun wrapIcmp(
+        srcIp: String,
+        dstIp: String,
+        payload: ByteArray,
+        payloadOffset: Int = 0,
+        payloadLength: Int = payload.size,
+    ): ByteArray {
+        val src = toBytes(srcIp) ?: throw IllegalArgumentException("bad src ip: $srcIp")
+        val dst = toBytes(dstIp) ?: throw IllegalArgumentException("bad dst ip: $dstIp")
+        val total = HEADER_LEN + payloadLength
+        val pkt = ByteArray(total)
+        pkt[0] = 0x45.toByte() // v4, ihl=5
+        pkt[2] = (total shr 8).toByte()
+        pkt[3] = (total and 0xFF).toByte()
+        pkt[8] = 64 // ttl
+        pkt[9] = PROTO_ICMP.toByte()
+        System.arraycopy(src, 0, pkt, 12, 4)
+        System.arraycopy(dst, 0, pkt, 16, 4)
+        System.arraycopy(payload, payloadOffset, pkt, HEADER_LEN, payloadLength)
+        val checksum = checksum(pkt, 0, HEADER_LEN)
+        pkt[10] = (checksum shr 8).toByte()
+        pkt[11] = (checksum and 0xFF).toByte()
+        return pkt
+    }
+
+    /** ICMP message checksum (type/code/checksum/id/seq/data). */
+    fun icmpChecksum(payload: ByteArray, offset: Int = 0, length: Int = payload.size): Int =
+        checksum(payload, offset, length)
+
     /** Internet checksum over [length] bytes starting at [offset]. */
     fun checksum(data: ByteArray, offset: Int, length: Int): Int {
         var sum = 0L
