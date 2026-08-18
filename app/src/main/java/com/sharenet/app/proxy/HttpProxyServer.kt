@@ -128,6 +128,7 @@ class HttpProxyServer(
     private fun handleClient(socket: Socket) {
         try {
             socket.soTimeout = IDLE_TIMEOUT_MS
+            socket.tcpNoDelay = true  // minimize latency
             val input = BufferedInputStream(socket.getInputStream(), BUFFER)
             val output = BufferedOutputStream(socket.getOutputStream(), BUFFER)
             serve(input, output)
@@ -399,6 +400,7 @@ class HttpProxyServer(
         try {
             origin.connect(InetSocketAddress(req.host, req.port), CONNECT_TIMEOUT_MS)
             origin.soTimeout = IDLE_TIMEOUT_MS
+            origin.tcpNoDelay = true  // minimize latency
             val originInput = BufferedInputStream(origin.getInputStream(), BUFFER)
             val originOutput = BufferedOutputStream(origin.getOutputStream(), BUFFER)
 
@@ -501,6 +503,7 @@ class HttpProxyServer(
         try {
             origin.connect(InetSocketAddress(req.host, req.port), CONNECT_TIMEOUT_MS)
             origin.soTimeout = IDLE_TIMEOUT_MS
+            origin.tcpNoDelay = true  // minimize latency
             output.write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
             output.flush()
 
@@ -653,8 +656,8 @@ class HttpProxyServer(
     private fun isHopByHop(name: String): Boolean = name.lowercase() in HOP_BY_HOP_HEADERS
 
     companion object {
-        private const val BUFFER = 8192
-        private const val MAX_CONNECTIONS = 32
+        private const val BUFFER = 64 * 1024  // 64 KB — maximize throughput
+        private const val MAX_CONNECTIONS = 64
         private const val IDLE_TIMEOUT_MS = 120_000
         private const val CONNECT_TIMEOUT_MS = 10_000
         private const val TUNNEL_JOIN_TIMEOUT_MS = 130_000L
@@ -687,104 +690,199 @@ class HttpProxyServer(
             |<head>
             |  <meta charset="utf-8">
             |  <meta name="viewport" content="width=device-width, initial-scale=1">
-            |  <title>ShareNet — Internet Setup</title>
+            |  <title>ShareNet</title>
             |  <style>
+            |    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
             |    * { box-sizing: border-box; margin: 0; padding: 0; }
-            |    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            |           background: #0f0f0f; color: #e0e0e0; padding: 24px; max-width: 640px; margin: 0 auto; }
-            |    h1 { font-size: 1.5em; margin-bottom: 8px; color: #fff; }
-            |    .subtitle { color: #9e9e9e; margin-bottom: 24px; font-size: 0.95em; }
-            |    .card { background: #1a1a1a; border-radius: 12px; padding: 20px; margin-bottom: 16px;
-            |            border: 1px solid #333; }
-            |    .card h2 { font-size: 1.1em; margin-bottom: 12px; color: #4fc3f7; }
-            |    .step { display: flex; align-items: flex-start; margin-bottom: 10px; }
-            |    .step-num { background: #4fc3f7; color: #000; width: 24px; height: 24px;
-            |                border-radius: 50%; display: flex; align-items: center;
-            |                justify-content: center; font-weight: bold; font-size: 0.85em;
-            |                flex-shrink: 0; margin-right: 10px; margin-top: 2px; }
-            |    .step-text { line-height: 1.5; }
-            |    code { background: #2a2a2a; padding: 2px 6px; border-radius: 4px;
-            |           font-family: 'SF Mono', Consolas, monospace; font-size: 0.9em;
-            |           color: #81c784; }
-            |    .btn { display: inline-block; background: #4fc3f7; color: #000; padding: 12px 24px;
-            |           border-radius: 8px; text-decoration: none; font-weight: 600;
-            |           margin-top: 8px; font-size: 1em; }
-            |    .btn:hover { background: #81d4fa; }
-            |    .note { color: #9e9e9e; font-size: 0.85em; margin-top: 16px; line-height: 1.5; }
-            |    .proxy-info { background: #1b2a1b; border: 1px solid #2e7d32; border-radius: 8px;
-            |                  padding: 12px 16px; margin-top: 12px; font-size: 0.95em; }
-            |    .proxy-info strong { color: #81c784; }
-            |    .tabs { display: flex; gap: 0; margin-bottom: 0; }
-            |    .tab { padding: 10px 16px; background: #222; cursor: pointer; border-radius: 8px 8px 0 0;
-            |           font-size: 0.9em; color: #999; border: 1px solid #333; border-bottom: none; }
-            |    .tab.active { background: #1a1a1a; color: #4fc3f7; font-weight: 600; }
-            |    .tab-content { display: none; }
-            |    .tab-content.active { display: block; }
-            |    .platform { display: none; }
-            |    .platform.active { display: block; }
+            |    body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            |           background: #09090b; color: #fafafa; min-height: 100vh; overflow-x: hidden; }
+            |    .container { max-width: 560px; margin: 0 auto; padding: 48px 24px; }
+            |    .hero { text-align: center; margin-bottom: 40px; }
+            |    .logo { width: 56px; height: 56px; background: linear-gradient(135deg, #06b6d4, #3b82f6);
+            |            border-radius: 16px; display: flex; align-items: center; justify-content: center;
+            |            font-size: 28px; margin: 0 auto 20px; box-shadow: 0 8px 32px rgba(6,182,212,0.3); }
+            |    .hero h1 { font-size: 1.75em; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 8px; }
+            |    .hero p { color: #a1a1aa; font-size: 0.95em; line-height: 1.6; }
+            |    .status { display: inline-flex; align-items: center; gap: 8px; background: #052e16;
+            |              border: 1px solid #166534; border-radius: 100px; padding: 6px 16px;
+            |              font-size: 0.85em; color: #4ade80; margin-bottom: 32px; }
+            |    .status-dot { width: 8px; height: 8px; background: #4ade80; border-radius: 50%;
+            |                   animation: pulse 2s infinite; }
+            |    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+            |    .card { background: #18181b; border: 1px solid #27272a; border-radius: 16px;
+            |            padding: 24px; margin-bottom: 16px; }
+            |    .card-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+            |    .card-icon { width: 36px; height: 36px; border-radius: 10px; display: flex;
+            |                  align-items: center; justify-content: center; font-size: 18px; }
+            |    .card-icon.green { background: #052e16; }
+            |    .card-icon.blue { background: #0c1e3a; }
+            |    .card-icon.purple { background: #1e1033; }
+            |    .card h2 { font-size: 1em; font-weight: 600; }
+            |    .card p.desc { color: #71717a; font-size: 0.85em; margin-top: 2px; }
+            |    .cmd-box { background: #09090b; border: 1px solid #27272a; border-radius: 12px;
+            |               padding: 14px 16px; margin-top: 12px; position: relative; cursor: pointer;
+            |               transition: border-color 0.2s; }
+            |    .cmd-box:hover { border-color: #3f3f46; }
+            |    .cmd-box:active { border-color: #06b6d4; }
+            |    .cmd-label { font-size: 0.7em; text-transform: uppercase; letter-spacing: 0.08em;
+            |                 color: #52525b; margin-bottom: 6px; font-weight: 600; }
+            |    .cmd-text { font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace;
+            |                font-size: 0.82em; color: #4ade80; line-height: 1.6; word-break: break-all; }
+            |    .copy-hint { position: absolute; top: 12px; right: 12px; font-size: 0.75em;
+            |                  color: #52525b; background: #18181b; padding: 4px 8px; border-radius: 6px;
+            |                  border: 1px solid #27272a; }
+            |    .copy-hint:hover { color: #a1a1aa; }
+            |    .proxy-badge { display: flex; align-items: center; justify-content: space-between;
+            |                   background: #09090b; border: 1px solid #27272a; border-radius: 12px;
+            |                   padding: 12px 16px; margin-top: 12px; }
+            |    .proxy-badge span { font-family: 'SF Mono', Consolas, monospace; font-size: 0.9em;
+            |                        color: #06b6d4; font-weight: 600; }
+            |    .proxy-label { font-size: 0.8em; color: #71717a; }
+            |    .platforms { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;
+            |                 margin-top: 16px; }
+            |    .plat-btn { background: #09090b; border: 1px solid #27272a; border-radius: 10px;
+            |                padding: 10px 8px; text-align: center; cursor: pointer;
+            |                transition: all 0.2s; font-size: 0.82em; color: #71717a; }
+            |    .plat-btn:hover { border-color: #3f3f46; color: #a1a1aa; }
+            |    .plat-btn.active { border-color: #06b6d4; background: #0c1e3a; color: #06b6d4; font-weight: 600; }
+            |    .plat-btn .icon { font-size: 1.4em; display: block; margin-bottom: 4px; }
+            |    .steps { margin-top: 16px; }
+            |    .step { display: flex; align-items: flex-start; gap: 12px; padding: 10px 0; }
+            |    .step + .step { border-top: 1px solid #27272a; }
+            |    .step-num { width: 24px; height: 24px; background: #27272a; border-radius: 8px;
+            |                display: flex; align-items: center; justify-content: center;
+            |                font-size: 0.75em; font-weight: 700; color: #a1a1aa; flex-shrink: 0;
+            |                margin-top: 1px; }
+            |    .step-text { font-size: 0.88em; line-height: 1.6; color: #d4d4d8; }
+            |    .step-text strong { color: #fafafa; }
+            |    code { background: #27272a; padding: 2px 7px; border-radius: 5px;
+            |           font-family: 'SF Mono', Consolas, monospace; font-size: 0.88em;
+            |           color: #4ade80; }
+            |    .footer { text-align: center; margin-top: 32px; padding-top: 24px;
+            |              border-top: 1px solid #18181b; }
+            |    .footer p { font-size: 0.8em; color: #3f3f46; line-height: 1.6; }
+            |    .tag { display: inline-block; background: #18181b; border: 1px solid #27272a;
+            |           border-radius: 6px; padding: 2px 8px; font-size: 0.75em; color: #71717a;
+            |           margin-top: 8px; }
             |  </style>
             |</head>
             |<body>
-            |  <h1>🌐 ShareNet</h1>
-            |  <p class="subtitle">Internet is available — just configure the proxy below.</p>
-            |
-            |  <div class="card">
-            |    <h2>⚡ Quick Setup (Recommended)</h2>
-            |    <p style="margin-bottom:12px">Copy and paste this command in a terminal to auto-configure:</p>
-            |    <div style="background:#1a2a1a;border:1px solid #2e7d32;border-radius:8px;padding:12px 16px;margin-top:8px;">
-            |      <code style="font-size:0.85em;color:#81c784;word-break:break-all;">gsettings set org.gnome.system.proxy mode 'manual' && gsettings set org.gnome.system.proxy.http host '192.168.49.1' && gsettings set org.gnome.system.proxy.http port 8080 && gsettings set org.gnome.system.proxy.https host '192.168.49.1' && gsettings set org.gnome.system.proxy.https port 8080</code>
+            |  <div class="container">
+            |    <div class="hero">
+            |      <div class="logo">⚡</div>
+            |      <h1>ShareNet</h1>
+            |      <div class="status"><div class="status-dot"></div> Connected — internet ready</div>
+            |      <p>You're connected to a shared network.<br>Configure your proxy to start browsing.</p>
             |    </div>
-            |    <p class="note" style="margin-top:8px">For Firefox: Settings → General → Network Settings → Manual proxy → <code>192.168.49.1:8080</code></p>
+            |
+            |    <div class="card">
+            |      <div class="card-header">
+            |        <div class="card-icon green">⚡</div>
+            |        <div>
+            |          <h2>Quick Setup</h2>
+            |          <p class="desc">One command to enable internet access</p>
+            |        </div>
+            |      </div>
+            |      <div class="cmd-box" onclick="copyCmd(this)" title="Click to copy">
+            |        <div class="copy-hint">click to copy</div>
+            |        <div class="cmd-label">Terminal command</div>
+            |        <div class="cmd-text" id="cmd">gsettings set org.gnome.system.proxy mode 'manual' && gsettings set org.gnome.system.proxy.http host '192.168.49.1' && gsettings set org.gnome.system.proxy.http port 8080 && gsettings set org.gnome.system.proxy.https host '192.168.49.1' && gsettings set org.gnome.system.proxy.https port 8080</div>
+            |      </div>
+            |      <div style="margin-top:10px;font-size:0.82em;color:#52525b;">Firefox users: paste <code>{{PROXY_ADDR}}</code> in Settings → Network Settings</div>
+            |    </div>
+            |
+            |    <div class="card">
+            |      <div class="card-header">
+            |        <div class="card-icon blue">📋</div>
+            |        <div>
+            |          <h2>Manual Setup</h2>
+            |          <p class="desc">Step-by-step for your operating system</p>
+            |        </div>
+            |      </div>
+            |      <div class="proxy-badge">
+            |        <div><div class="proxy-label">Proxy address</div></div>
+            |        <span>{{PROXY_ADDR}}</span>
+            |      </div>
+            |      <div class="platforms">
+            |        <div class="plat-btn active" onclick="showPlat('win',this)"><span class="icon">🪟</span>Windows</div>
+            |        <div class="plat-btn" onclick="showPlat('mac',this)"><span class="icon">🍎</span>Mac</div>
+            |        <div class="plat-btn" onclick="showPlat('lin',this)"><span class="icon">🐧</span>Linux</div>
+            |        <div class="plat-btn" onclick="showPlat('and',this)"><span class="icon">📱</span>Android</div>
+            |      </div>
+            |      <div class="steps">
+            |        <div id="plat-win" style="display:block">
+            |          <div class="step"><div class="step-num">1</div><div class="step-text">Open <strong>Settings</strong> → Network & Internet → <strong>Proxy</strong></div></div>
+            |          <div class="step"><div class="step-num">2</div><div class="step-text">Turn on <strong>Use a proxy server</strong></div></div>
+            |          <div class="step"><div class="step-num">3</div><div class="step-text">Enter <code>{{PROXY_ADDR}}</code></div></div>
+            |          <div class="step"><div class="step-num">4</div><div class="step-text">Click <strong>Save</strong></div></div>
+            |        </div>
+            |        <div id="plat-mac" style="display:none">
+            |          <div class="step"><div class="step-num">1</div><div class="step-text">Open <strong>System Settings</strong> → Network → Wi-Fi</div></div>
+            |          <div class="step"><div class="step-num">2</div><div class="step-text">Click <strong>Details</strong> → <strong>Proxies</strong> tab</div></div>
+            |          <div class="step"><div class="step-num">3</div><div class="step-text">Enable <strong>Web Proxy</strong> & <strong>Secure Web Proxy</strong></div></div>
+            |          <div class="step"><div class="step-num">4</div><div class="step-text">Enter <code>{{PROXY_ADDR}}</code></div></div>
+            |        </div>
+            |        <div id="plat-lin" style="display:none">
+            |          <div class="step"><div class="step-num">1</div><div class="step-text">Open <strong>Settings</strong> → Network → <strong>Network Proxy</strong></div></div>
+            |          <div class="step"><div class="step-num">2</div><div class="step-text">Set Method to <strong>Manual</strong></div></div>
+            |          <div class="step"><div class="step-num">3</div><div class="step-text">Enter HTTP Proxy: <code>{{PROXY_ADDR}}</code></div></div>
+            |          <div class="step"><div class="step-num">4</div><div class="step-text">Click <strong>Apply</strong></div></div>
+            |        </div>
+            |        <div id="plat-and" style="display:none">
+            |          <div class="step"><div class="step-num">1</div><div class="step-text">Long-press the connected Wi-Fi → <strong>Modify</strong></div></div>
+            |          <div class="step"><div class="step-num">2</div><div class="step-text">Advanced options → Proxy → <strong>Manual</strong></div></div>
+            |          <div class="step"><div class="step-num">3</div><div class="step-text">Enter <code>{{PROXY_ADDR}}</code></div></div>
+            |        </div>
+            |      </div>
+            |    </div>
+            |
+            |    <div class="card" style="border-color:#1e1033;">
+            |      <div class="card-header">
+            |        <div class="card-icon purple">🚀</div>
+            |        <div>
+            |          <h2>Full Access Mode</h2>
+            |          <p class="desc">For chat apps, games, and all other apps</p>
+            |        </div>
+            |      </div>
+            |      <p style="font-size:0.85em;color:#a1a1aa;line-height:1.6;margin-bottom:12px;">The proxy above covers web browsing. For <strong>all apps</strong> (WhatsApp, Telegram, etc.), run this transparent tunnel:</p>
+            |      <div class="cmd-box" onclick="copyTunnel(this)" title="Click to copy">
+            |        <div class="copy-hint">click to copy</div>
+            |        <div class="cmd-label">Terminal command</div>
+            |        <div class="cmd-text" id="tunnel-cmd">curl -sL https://raw.githubusercontent.com/Oluwanifemi-engineer/ShareNet/main/scripts/setup-transparent-tunnel.sh | bash -s -- 192.168.49.1 1080</div>
+            |      </div>
+            |      <p style="font-size:0.78em;color:#52525b;margin-top:8px;">Requires sudo. To stop: <code style="font-size:0.85em;">curl -sL ...setup-transparent-tunnel.sh | bash -s -- --stop</code></p>
+            |    </div>
+            |
+            |    <div class="footer">
+            |      <p>To undo: set proxy back to <strong>Off</strong> or <strong>Automatic</strong></p>
+            |      <div class="tag">ShareNet v1.0</div>
+            |    </div>
             |  </div>
-            |
-            |  <div class="card">
-            |    <h2>📋 Manual Setup</h2>
-            |    <div class="proxy-info">
-            |      Proxy Address: <strong>{{PROXY_ADDR}}</strong>
-            |    </div>
-            |    <div class="tabs" id="tabs">
-            |      <div class="tab active" onclick="showTab('windows')">Windows</div>
-            |      <div class="tab" onclick="showTab('mac')">Mac</div>
-            |      <div class="tab" onclick="showTab('linux')">Linux</div>
-            |      <div class="tab" onclick="showTab('android')">Android</div>
-            |    </div>
-            |
-            |    <div class="platform active" id="windows">
-            |      <div class="step"><div class="step-num">1</div><div class="step-text">Open <strong>Settings</strong> → Network & Internet → <strong>Proxy</strong></div></div>
-            |      <div class="step"><div class="step-num">2</div><div class="step-text">Turn on <strong>Use a proxy server</strong></div></div>
-            |      <div class="step"><div class="step-num">3</div><div class="step-text">Enter Address: <code>{{PROXY_ADDR}}</code></div></div>
-            |      <div class="step"><div class="step-num">4</div><div class="step-text">Click <strong>Save</strong></div></div>
-            |    </div>
-            |
-            |    <div class="platform" id="mac">
-            |      <div class="step"><div class="step-num">1</div><div class="step-text">Open <strong>System Settings</strong> → Network → Wi-Fi → <strong>Details</strong></div></div>
-            |      <div class="step"><div class="step-num">2</div><div class="step-text">Go to <strong>Proxies</strong> tab</div></div>
-            |      <div class="step"><div class="step-num">3</div><div class="step-text">Enable <strong>Web Proxy (HTTP)</strong> and <strong>Secure Web Proxy (HTTPS)</strong></div></div>
-            |      <div class="step"><div class="step-num">4</div><div class="step-text">Enter: <code>{{PROXY_ADDR}}</code></div></div>
-            |    </div>
-            |
-            |    <div class="platform" id="linux">
-            |      <div class="step"><div class="step-num">1</div><div class="step-text">Open <strong>Settings</strong> → Network → Network Proxy</div></div>
-            |      <div class="step"><div class="step-num">2</div><div class="step-text">Set Method to <strong>Manual</strong></div></div>
-            |      <div class="step"><div class="step-num">3</div><div class="step-text">Enter HTTP Proxy: <code>{{PROXY_ADDR}}</code></div></div>
-            |      <div class="step"><div class="step-num">4</div><div class="step-text">Click <strong>Apply</strong></div></div>
-            |    </div>
-            |
-            |    <div class="platform" id="android">
-            |      <div class="step"><div class="step-num">1</div><div class="step-text">Long-press the connected Wi-Fi network → <strong>Modify</strong></div></div>
-            |      <div class="step"><div class="step-num">2</div><div class="step-text">Advanced → Proxy → <strong>Manual</strong></div></div>
-            |      <div class="step"><div class="step-num">3</div><div class="step-text">Enter: <code>{{PROXY_ADDR}}</code></div></div>
-            |    </div>
-            |  </div>
-            |
-            |  <p class="note">Once configured, all your internet traffic will flow through this connection. To undo, set Proxy back to "Off" or "Automatic".</p>
             |
             |  <script>
-            |    function showTab(id) {
-            |      document.querySelectorAll('.platform').forEach(p => p.classList.remove('active'));
-            |      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            |      document.getElementById(id).classList.add('active');
-            |      event.target.classList.add('active');
+            |    function showPlat(id, el) {
+            |      document.querySelectorAll('[id^=plat-]').forEach(p => p.style.display='none');
+            |      document.querySelectorAll('.plat-btn').forEach(b => b.classList.remove('active'));
+            |      document.getElementById('plat-'+id).style.display='block';
+            |      el.classList.add('active');
+            |    }
+            |    function copyCmd(el) {
+            |      const text = document.getElementById('cmd').textContent;
+            |      navigator.clipboard.writeText(text).then(() => {
+            |        const hint = el.querySelector('.copy-hint');
+            |        hint.textContent = '✓ copied!';
+            |        hint.style.color = '#4ade80';
+            |        setTimeout(() => { hint.textContent = 'click to copy'; hint.style.color = ''; }, 2000);
+            |      });
+            |    }
+            |    function copyTunnel(el) {
+            |      const text = document.getElementById('tunnel-cmd').textContent;
+            |      navigator.clipboard.writeText(text).then(() => {
+            |        const hint = el.querySelector('.copy-hint');
+            |        hint.textContent = '✓ copied!';
+            |        hint.style.color = '#4ade80';
+            |        setTimeout(() => { hint.textContent = 'click to copy'; hint.style.color = ''; }, 2000);
+            |      });
             |    }
             |  </script>
             |</body>
