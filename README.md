@@ -222,18 +222,21 @@ Done so far: host sharing (Tier 1) · full tunnel client mode (UDP + TCP, Tier 2
 DNS for P2P clients · OS Wi-Fi Sharing tip card · premium M3 UI with dark mode ·
 pairing-PIN client auth · SSRF/LAN destination policy · live traffic stats ·
 QR join code · privacy policy (in-app + `docs/PRIVACY-POLICY.md`) · heartbeat
-liveness + sticky service restart · RTO backoff · CI + version catalog.
+liveness + sticky service restart · RTO backoff + dup-ACK fast retransmit ·
+CI + version catalog. Validation status is tracked in `docs/VALIDATION.md`.
 
-1. **Play distribution.** Everything is staged in `docs/PLAY-STORE.md`
-   (signing, Data Safety answers, permission declarations); the actual upload
-   needs a Play Console account and a hosted privacy-policy URL.
+1. **Play distribution.** Staged in `docs/PLAY-STORE.md` (signing, Data
+   Safety answers, permission declarations) but **parked**: nothing ships
+   until the real-world gate in `docs/VALIDATION.md` passes (two-device E2E,
+   multi-client, throughput, battery, soak).
 2. **Two-device automation.** `scripts/two-device-test.sh` now drives the
    client's join too: it taps the `DIRECT-…` network in Wi-Fi settings, types
    the passphrase, fills in the pairing PIN, and confirms the VPN dialog via
    adb UI automation — with manual fallbacks when a device/ROM resists.
 3. **ICMP relay** for ping through tunnel mode (needs a privileged socket).
-4. **Fast retransmit** in `TcpTunnelCore` (dup-ACK driven) once a second
-   device is on hand; RTO now backs off exponentially.
+4. **Lossy-link validation on-device.** Fast retransmit (dup-ACK driven) is
+   implemented in `TcpTunnelCore` and covered by a JVM test; confirming it
+   under real packet loss on hardware is tracked in `docs/VALIDATION.md`.
 
 ## 9. Verified on hardware (Galaxy A03s, Android 13)
 

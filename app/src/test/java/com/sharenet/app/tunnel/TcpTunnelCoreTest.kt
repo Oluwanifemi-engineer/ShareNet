@@ -310,6 +310,49 @@ class TcpTunnelCoreTest {
         assertEquals(0, core.connsActive)
     }
 
+    @Test
+    fun `fast-retransmits the missing segment on three duplicate acks`() {
+        val core = newCore()
+        val (connId, _) = handshake(core)
+        outgoing.clear()
+
+        val body = "abcdefghijklmnopqrstuvwxyz0123456789".toByteArray() // 36 bytes
+        core.onRemoteData(connId, body)
+        assertEquals(1, outgoing.size)
+        val ourStart = parseTcp(outgoing[0]).seq
+
+        // The app acks only the first 12 bytes; the rest stay unacked.
+        outgoing.clear()
+        core.onIpPacket(appAck(seq = 1001, ack = ourStart + 12))
+
+        // Two duplicate ACKs are not enough — and no tick/RTO has fired.
+        core.onIpPacket(appAck(seq = 1001, ack = ourStart + 12))
+        core.onIpPacket(appAck(seq = 1001, ack = ourStart + 12))
+        assertEquals(0, outgoing.size)
+
+        // The third duplicate ACK triggers fast retransmit immediately,
+        // resending only the single missing segment.
+        core.onIpPacket(appAck(seq = 1001, ack = ourStart + 12))
+        assertEquals(1, outgoing.size)
+        val resent = parseTcp(outgoing[0])
+        assertEquals(ourStart + 12, resent.seq)
+        assertArrayEquals(body.copyOfRange(12, body.size), resent.payload)
+        assertEquals(1, core.fastRetransmits)
+        assertEquals(0, core.retransmits) // RTO path never fired
+
+        // One shot per lost segment: further dup ACKs are ignored until a
+        // real ACK arrives (the RTO timer restarted from the resend instead).
+        outgoing.clear()
+        core.onIpPacket(appAck(seq = 1001, ack = ourStart + 12))
+        assertEquals(0, outgoing.size)
+
+        // A real ACK advances the stream and drains the connection normally.
+        core.onIpPacket(appAck(seq = 1001, ack = ourStart + body.size))
+        fakeNow += 400
+        core.tick(fakeNow)
+        assertEquals(0, outgoing.size)
+    }
+
     // ── Close ───────────────────────────────────────────────────────────────
 
     @Test

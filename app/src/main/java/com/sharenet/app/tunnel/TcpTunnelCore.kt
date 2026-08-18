@@ -23,8 +23,10 @@ import com.sharenet.app.proxy.TcpFlags
  *  - In-order data only; out-of-order segments are re-ACKed so the app
  *    retransmits (correct, if not maximally efficient — fine for a local
  *    link).
- *  - Retransmission via [tick]: unacknowledged data is resent after the RTO;
- *    after too many retries the connection is reset.
+ *  - Retransmission: unacknowledged data is resent after the RTO via [tick]
+ *    (exponential backoff), or immediately after three duplicate ACKs (fast
+ *    retransmit) — the difference between a hiccup and a stall on a lossy
+ *    P2P link. After too many retries the connection is reset.
  *  - Pure state machine: no threads, no sockets, no wall clock. The owner
  *    feeds packets and calls [tick]; replies come out through [output].
  */
@@ -46,6 +48,7 @@ class TcpTunnelCore(
     @Volatile var appBytesForwarded = 0L; private set
     @Volatile var remoteBytesDelivered = 0L; private set
     @Volatile var retransmits = 0L; private set
+    @Volatile var fastRetransmits = 0L; private set
     @Volatile var resetsSent = 0L; private set
     @Volatile var connsActive = 0L; private set
     @Volatile var malformedDropped = 0L; private set
@@ -69,6 +72,8 @@ class TcpTunnelCore(
         var ourFinSeq: Long = -1,  // set when we send FIN
         var lastSendMs: Long = 0,
         var retries: Int = 0,
+        var dupAcks: Int = 0,      // consecutive duplicate ACKs from the app
+        var fastRetransmitted: Boolean = false, // one fast retransmit per lost segment
         var connected: Boolean = false, // host's real socket established
         var pendingPayload: MutableList<ByteArray>? = null,
         var pendingClose: Boolean = false, // app FIN arrived before CONNECTED
@@ -384,6 +389,27 @@ class TcpTunnelCore(
         conn.lastSendMs = now()
     }
 
+    /**
+     * Fast retransmit: resend the single oldest unacked segment (RFC 5681).
+     * Duplicate ACKs mean the app has everything before [Conn.sendStartSeq],
+     * so that is exactly the byte it is missing. Also restarts the RTO timer.
+     */
+    private fun fastRetransmit(conn: Conn) {
+        if (conn.sendLen == 0) return
+        val chunk = minOf(MAX_SEGMENT, conn.sendLen)
+        output(
+            Ipv4Codec.wrapTcp(
+                srcIp = conn.dstIp, srcPort = conn.dstPort,
+                dstIp = conn.srcIp, dstPort = conn.srcPort,
+                seq = conn.sendStartSeq, ack = conn.appSeq,
+                flags = TcpFlags.ACK or TcpFlags.PSH,
+                window = WINDOW,
+                payload = conn.sendBuffer, payloadOffset = 0, payloadLength = chunk,
+            ),
+        )
+        conn.lastSendMs = now()
+    }
+
     private fun resendUnacked(conn: Conn) {
         if (conn.sendLen == 0) return
         var pos = 0
@@ -447,7 +473,26 @@ class TcpTunnelCore(
             }
             return
         }
-        if (ack > conn.ackedSeq) conn.ackedSeq = ack
+        if (ack > conn.ackedSeq) {
+            conn.ackedSeq = ack
+            conn.dupAcks = 0
+            conn.fastRetransmitted = false
+        } else if (ack == conn.ackedSeq && conn.ackedSeq > 0 && conn.sendLen > 0) {
+            // Duplicate ACK: the app received everything up to ackedSeq, so
+            // the first unacked byte is missing. Three of these in a row mean
+            // "fast retransmit" — resend that one segment now instead of
+            // waiting out the RTO. One shot per lost segment: after the
+            // retransmit, dup ACKs accumulate again before the next one.
+            if (!conn.fastRetransmitted) {
+                conn.dupAcks++
+                if (conn.dupAcks >= FAST_RETRANSMIT_THRESHOLD) {
+                    conn.dupAcks = 0
+                    conn.fastRetransmitted = true
+                    fastRetransmits++
+                    fastRetransmit(conn)
+                }
+            }
+        }
         if (conn.sendLen > 0 && ack > conn.sendStartSeq) {
             val consumed = (ack - conn.sendStartSeq).toInt()
             if (consumed >= conn.sendLen) {
@@ -506,6 +551,7 @@ class TcpTunnelCore(
         private const val SEND_BUFFER_MAX = 256 * 1024
         private const val MAX_CONNECTIONS = 64
         private const val MAX_PENDING_SEGMENTS = 64
+        private const val FAST_RETRANSMIT_THRESHOLD = 3 // dup ACKs -> resend
         private const val RTO_MS = 400L
         private const val MAX_RTO_MS = 10_000L
         private const val MAX_RTO_SHIFT = 5 // 400ms * 2^5 = 12.8s, capped above
