@@ -105,7 +105,8 @@ class IcmpRelayServer(
             try {
                 relay.receive(packet)
             } catch (e: SocketException) {
-                break
+                if (!running.get()) break
+                continue // SocketTimeoutException extends SocketException — keep looping
             } catch (_: Exception) {
                 if (!running.get()) break
                 continue

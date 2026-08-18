@@ -206,9 +206,11 @@ banner is cosmetic (harmless on most ROMs).
 
 ## 7. Honest limitations & notes
 
-- **ICMP (ping) in tunnel mode.** Now relayed via rootless kernel ping
-  sockets (`IcmpRelayServer` + `OsPingSocket`). Falls back to dropping
-  silently if an OEM kernel refuses ping sockets.
+- **ICMP (ping) in tunnel mode.** The relay (`IcmpRelayServer` +
+  `OsPingSocket`) is implemented and JVM-tested. On stock Android, SELinux
+  blocks `untrusted_app` from binding ICMP sockets (`name_bind` denied on
+  `icmp_socket`), so the relay degrades to dropping — ping works on rooted
+  devices or custom ROMs with relaxed policy.
 - **One radio, one channel.** The P2P group shares the Wi-Fi radio with the
   upstream connection; throughput is reduced and some devices briefly drop the
   upstream when the group forms (NetShare has the same behavior).

@@ -68,7 +68,7 @@ This is expected — once the client sets its proxy to
 ## ⚠️ NOT yet proven — needs a second phone (the distribution gate)
 
 - [ ] **Two-device E2E:** client phone joins `DIRECT-…`, enters the pairing PIN, VPN captures *all* of its traffic; TCP *and* UDP (games/VoIP/WebRTC) flow over the real P2P link — `scripts/two-device-test.sh`
-- [ ] **ICMP (ping) relay on-device:** relay is implemented (rootless, kernel ping sockets via `OsPingSocket`) and JVM-tested end-to-end; the on-device data-path test uses `nc -u` over ADB which has known binary-pipe issues on the device's toybox — needs an alternative carrier or direct socket test
+- [ ] **ICMP (ping) relay on-device:** relay is implemented and JVM-tested; on-device instrumented tests confirm the UDP carrier path works (`0.0.0.0` binding) and the relay degrades gracefully when SELinux blocks ICMP socket bind (`pingUnsupported++`); the full ping-through path requires a rooted device or custom SELinux policy
 - [ ] Client tunnel verified on a second *different* Android version/ROM (only Android 13 / A03s seen so far)
 - [ ] Non-Android clients (Windows/macOS): manual proxy, CONNECT, chunked bodies, join UX
 - [ ] Multiple concurrent clients (target 3–5) sharing one link; connection accounting (`devices connected`)
@@ -80,9 +80,11 @@ This is expected — once the client sets its proxy to
 
 ## ✅ Explicitly out of scope / accepted limits (stated in the listing)
 
-- ICMP (ping) in tunnel mode: now relayed via rootless kernel ping sockets
-  (`OsPingSocket` + `IcmpRelayServer`); the relay gracefully degrades to
-  dropping when the kernel refuses (OEM restriction)
+- ICMP (ping) in tunnel mode: the relay (`IcmpRelayServer` + `OsPingSocket`)
+  is implemented and JVM-tested; SELinux blocks `name_bind` on `icmp_socket`
+  for `untrusted_app` on stock Android (audit log confirmed), so the relay
+  gracefully degrades to dropping — works only on rooted devices or custom
+  ROMs with relaxed SELinux policy
 - One radio, one channel: throughput reduced, some devices briefly drop the
   upstream when the group forms
 - OS-native "Wi-Fi Sharing" (Android 13+) is the recommended Tier 0 when the
