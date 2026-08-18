@@ -186,6 +186,8 @@ and run — the SDK/AGP/Gradle versions match the local toolchain.
      → Manual.
    - *Windows/macOS*: the network's Proxy settings (Manual, host
      `192.168.49.1`, port `8080`).
+   - *Linux*: see `docs/PC-CLIENT.md` for detailed instructions (GNOME,
+     Firefox, command-line).
 
 **On an Android client (adds UDP via tunnel mode):**
 1. Join the host's `DIRECT-…` network in Wi-Fi settings.
@@ -220,6 +222,13 @@ banner is cosmetic (harmless on most ROMs).
 - **Carrier TOS.** Tethering is a data-plan feature on many carriers; the app
   makes hotspot data indistinguishable from regular data, which some plans
   prohibit. Use it on your own connections.
+- **PC / Linux clients.** Linux desktops connect to the Wi-Fi Direct hotspot as
+  regular WiFi clients (station mode), not as Wi-Fi Direct P2P peers. On most
+  Android devices this works fine — the GO bridges station-mode traffic. If your
+  PC gets an IP but can't reach the phone, check that:
+  (a) the PC is actually connected to the `DIRECT-…` network (not your regular
+  WiFi), (b) IP forwarding is enabled on the phone (`/proc/sys/net/ipv4/ip_forward`
+  should be `1`), and (c) the HTTP proxy is configured. See `docs/PC-CLIENT.md`.
 - **Known quirks.** A few OEMs (notably some Samsung builds) tear the P2P group
   down aggressively; some devices use a different GO subnet than `192.168.49.1`
   (the proxy binds to whatever address `P2pAddressResolver` finds and shows it
