@@ -186,7 +186,12 @@ class ShareService : Service() {
     /** Bind can race the P2P interface coming up; retry a few times. */
     private fun startProxyWithRetry(attemptsLeft: Int) {
         val host = P2pAddressResolver.resolveGroupOwnerAddress()
-        val candidate = HttpProxyServer(host, PROXY_PORT, stats) { msg ->
+        val candidate = HttpProxyServer(
+            bindHost = host,
+            port = PROXY_PORT,
+            stats = stats,
+            captivePortalEnabled = true,
+        ) { msg ->
             log("proxy: $msg")
         }
         try {

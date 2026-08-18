@@ -40,6 +40,7 @@ class HttpProxyServer(
     private val port: Int,
     private val stats: ProxyStats,
     private val destinationPolicy: DestinationPolicy = DestinationPolicy.STRICT,
+    private val captivePortalEnabled: Boolean = false,
     private val log: (String) -> Unit = {},
 ) {
 
@@ -154,8 +155,101 @@ class HttpProxyServer(
                     handleConnect(request, input, output)
                     return // tunnel ends the client connection
                 }
-                RequestKind.PLAIN -> keepAlive = handleHttp(request, input, output)
+                RequestKind.PLAIN -> {
+                    if (captivePortalEnabled) {
+                        keepAlive = handleCaptivePortal(request, input, output)
+                    } else {
+                        keepAlive = handleHttp(request, input, output)
+                    }
+                }
             }
+        }
+    }
+
+    // ── Captive portal ────────────────────────────────────────────────────
+
+    /**
+     * When captive portal is enabled, intercept plain HTTP requests and
+     * return a setup page that auto-configures the proxy on the client.
+     * This is the key consumer-friendly feature: when a PC opens a browser,
+     * instead of "no internet," it sees a one-click setup page.
+     *
+     * Special paths:
+     *   /proxy.pac  → PAC file for auto-proxy configuration
+     *   /setup      → the setup page (HTML)
+     *   everything else → 302 redirect to /setup
+     */
+    private fun handleCaptivePortal(
+        request: Request,
+        input: InputStream,
+        output: OutputStream,
+    ): Boolean {
+        val path = request.path.lowercase()
+        // Use the actual bound port, not the request port (which defaults to 80)
+        val host = request.host
+        val portNum = boundPort
+        val proxyAddr = "$host:$portNum"
+
+        when {
+            path == "/proxy.pac" || path.endsWith("/proxy.pac?") -> {
+                servePacFile(output, host, portNum)
+            }
+            path == "/setup" || path.endsWith("/setup?") -> {
+                serveSetupPage(output, proxyAddr)
+            }
+            else -> {
+                // Redirect to setup page using the actual bind address (not the request Host)
+                val setupUrl = "http://$bindHost:$portNum/setup"
+                runCatching {
+                    output.write(
+                        "HTTP/1.1 302 Found\r\n".toByteArray(Charsets.ISO_8859_1),
+                    )
+                    output.write(
+                        "Location: $setupUrl\r\n".toByteArray(Charsets.ISO_8859_1),
+                    )
+                    output.write(
+                        "Content-Length: 0\r\n".toByteArray(Charsets.ISO_8859_1),
+                    )
+                    output.write(
+                        "Connection: close\r\n\r\n".toByteArray(Charsets.ISO_8859_1),
+                    )
+                    output.flush()
+                }
+            }
+        }
+        return false // close after response
+    }
+
+    private fun servePacFile(output: OutputStream, host: String, port: Int) {
+        val pac = """
+            |function FindProxyForURL(url, host) {
+            |    return "PROXY $host:$port";
+            |}
+        """.trimMargin()
+        val body = pac.toByteArray(Charsets.UTF_8)
+        runCatching {
+            output.write("HTTP/1.1 200 OK\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Content-Type: application/x-ns-proxy-autoconfig\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Content-Length: ${body.size}\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Connection: close\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write(body)
+            output.flush()
+        }
+    }
+
+    private fun serveSetupPage(output: OutputStream, proxyAddr: String) {
+        val pacUrl = "http://$proxyAddr/proxy.pac"
+        val html = SETUP_PAGE_HTML
+            .replace("{{PROXY_ADDR}}", proxyAddr)
+            .replace("{{PAC_URL}}", pacUrl)
+        val body = html.toByteArray(Charsets.UTF_8)
+        runCatching {
+            output.write("HTTP/1.1 200 OK\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Content-Type: text/html; charset=utf-8\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Content-Length: ${body.size}\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Connection: close\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write(body)
+            output.flush()
         }
     }
 
@@ -563,6 +657,119 @@ class HttpProxyServer(
             "transfer-encoding",
             "upgrade",
         )
+
+        /**
+         * Consumer-friendly setup page served by the captive portal.
+         * When a PC opens a browser on the ShareNet hotspot, this page
+         * auto-configures the proxy so the user can browse immediately.
+         */
+        private val SETUP_PAGE_HTML = """
+            |<!DOCTYPE html>
+            |<html lang="en">
+            |<head>
+            |  <meta charset="utf-8">
+            |  <meta name="viewport" content="width=device-width, initial-scale=1">
+            |  <title>ShareNet — Internet Setup</title>
+            |  <style>
+            |    * { box-sizing: border-box; margin: 0; padding: 0; }
+            |    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            |           background: #0f0f0f; color: #e0e0e0; padding: 24px; max-width: 640px; margin: 0 auto; }
+            |    h1 { font-size: 1.5em; margin-bottom: 8px; color: #fff; }
+            |    .subtitle { color: #9e9e9e; margin-bottom: 24px; font-size: 0.95em; }
+            |    .card { background: #1a1a1a; border-radius: 12px; padding: 20px; margin-bottom: 16px;
+            |            border: 1px solid #333; }
+            |    .card h2 { font-size: 1.1em; margin-bottom: 12px; color: #4fc3f7; }
+            |    .step { display: flex; align-items: flex-start; margin-bottom: 10px; }
+            |    .step-num { background: #4fc3f7; color: #000; width: 24px; height: 24px;
+            |                border-radius: 50%; display: flex; align-items: center;
+            |                justify-content: center; font-weight: bold; font-size: 0.85em;
+            |                flex-shrink: 0; margin-right: 10px; margin-top: 2px; }
+            |    .step-text { line-height: 1.5; }
+            |    code { background: #2a2a2a; padding: 2px 6px; border-radius: 4px;
+            |           font-family: 'SF Mono', Consolas, monospace; font-size: 0.9em;
+            |           color: #81c784; }
+            |    .btn { display: inline-block; background: #4fc3f7; color: #000; padding: 12px 24px;
+            |           border-radius: 8px; text-decoration: none; font-weight: 600;
+            |           margin-top: 8px; font-size: 1em; }
+            |    .btn:hover { background: #81d4fa; }
+            |    .note { color: #9e9e9e; font-size: 0.85em; margin-top: 16px; line-height: 1.5; }
+            |    .proxy-info { background: #1b2a1b; border: 1px solid #2e7d32; border-radius: 8px;
+            |                  padding: 12px 16px; margin-top: 12px; font-size: 0.95em; }
+            |    .proxy-info strong { color: #81c784; }
+            |    .tabs { display: flex; gap: 0; margin-bottom: 0; }
+            |    .tab { padding: 10px 16px; background: #222; cursor: pointer; border-radius: 8px 8px 0 0;
+            |           font-size: 0.9em; color: #999; border: 1px solid #333; border-bottom: none; }
+            |    .tab.active { background: #1a1a1a; color: #4fc3f7; font-weight: 600; }
+            |    .tab-content { display: none; }
+            |    .tab-content.active { display: block; }
+            |    .platform { display: none; }
+            |    .platform.active { display: block; }
+            |  </style>
+            |</head>
+            |<body>
+            |  <h1>🌐 ShareNet</h1>
+            |  <p class="subtitle">Internet is available — just configure the proxy below.</p>
+            |
+            |  <div class="card">
+            |    <h2>⚡ Quick Setup (Recommended)</h2>
+            |    <p style="margin-bottom:12px">Click the link below to auto-configure your browser:</p>
+            |    <a class="btn" href="{{PAC_URL}}">Auto-Configure Proxy</a>
+            |    <p class="note">This opens a proxy auto-config file. Your browser will ask to confirm — click OK/Allow.</p>
+            |  </div>
+            |
+            |  <div class="card">
+            |    <h2>📋 Manual Setup</h2>
+            |    <div class="proxy-info">
+            |      Proxy Address: <strong>{{PROXY_ADDR}}</strong>
+            |    </div>
+            |    <div class="tabs" id="tabs">
+            |      <div class="tab active" onclick="showTab('windows')">Windows</div>
+            |      <div class="tab" onclick="showTab('mac')">Mac</div>
+            |      <div class="tab" onclick="showTab('linux')">Linux</div>
+            |      <div class="tab" onclick="showTab('android')">Android</div>
+            |    </div>
+            |
+            |    <div class="platform active" id="windows">
+            |      <div class="step"><div class="step-num">1</div><div class="step-text">Open <strong>Settings</strong> → Network & Internet → <strong>Proxy</strong></div></div>
+            |      <div class="step"><div class="step-num">2</div><div class="step-text">Turn on <strong>Use a proxy server</strong></div></div>
+            |      <div class="step"><div class="step-num">3</div><div class="step-text">Enter Address: <code>{{PROXY_ADDR}}</code></div></div>
+            |      <div class="step"><div class="step-num">4</div><div class="step-text">Click <strong>Save</strong></div></div>
+            |    </div>
+            |
+            |    <div class="platform" id="mac">
+            |      <div class="step"><div class="step-num">1</div><div class="step-text">Open <strong>System Settings</strong> → Network → Wi-Fi → <strong>Details</strong></div></div>
+            |      <div class="step"><div class="step-num">2</div><div class="step-text">Go to <strong>Proxies</strong> tab</div></div>
+            |      <div class="step"><div class="step-num">3</div><div class="step-text">Enable <strong>Web Proxy (HTTP)</strong> and <strong>Secure Web Proxy (HTTPS)</strong></div></div>
+            |      <div class="step"><div class="step-num">4</div><div class="step-text">Enter: <code>{{PROXY_ADDR}}</code></div></div>
+            |    </div>
+            |
+            |    <div class="platform" id="linux">
+            |      <div class="step"><div class="step-num">1</div><div class="step-text">Open <strong>Settings</strong> → Network → Network Proxy</div></div>
+            |      <div class="step"><div class="step-num">2</div><div class="step-text">Set Method to <strong>Manual</strong></div></div>
+            |      <div class="step"><div class="step-num">3</div><div class="step-text">Enter HTTP Proxy: <code>{{PROXY_ADDR}}</code></div></div>
+            |      <div class="step"><div class="step-num">4</div><div class="step-text">Click <strong>Apply</strong></div></div>
+            |    </div>
+            |
+            |    <div class="platform" id="android">
+            |      <div class="step"><div class="step-num">1</div><div class="step-text">Long-press the connected Wi-Fi network → <strong>Modify</strong></div></div>
+            |      <div class="step"><div class="step-num">2</div><div class="step-text">Advanced → Proxy → <strong>Manual</strong></div></div>
+            |      <div class="step"><div class="step-num">3</div><div class="step-text">Enter: <code>{{PROXY_ADDR}}</code></div></div>
+            |    </div>
+            |  </div>
+            |
+            |  <p class="note">Once configured, all your internet traffic will flow through this connection. To undo, set Proxy back to "Off" or "Automatic".</p>
+            |
+            |  <script>
+            |    function showTab(id) {
+            |      document.querySelectorAll('.platform').forEach(p => p.classList.remove('active'));
+            |      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            |      document.getElementById(id).classList.add('active');
+            |      event.target.classList.add('active');
+            |    }
+            |  </script>
+            |</body>
+            |</html>
+        """.trimMargin()
     }
 }
 
