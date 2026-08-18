@@ -62,10 +62,6 @@ class HttpProxyServer(
 
     val isRunning: Boolean get() = running.get()
 
-    /**
-     * Starts listening. Throws [ProxyBindException] if the address cannot be
-     * bound (usually because the P2P interface is not up yet — callers retry).
-     */
     @Synchronized
     fun start() {
         if (running.getAndSet(true)) return
@@ -128,12 +124,11 @@ class HttpProxyServer(
     private fun handleClient(socket: Socket) {
         try {
             socket.soTimeout = IDLE_TIMEOUT_MS
-            socket.tcpNoDelay = true  // minimize latency
+            socket.tcpNoDelay = true
             val input = BufferedInputStream(socket.getInputStream(), BUFFER)
             val output = BufferedOutputStream(socket.getOutputStream(), BUFFER)
             serve(input, output)
         } catch (_: Exception) {
-            // EOF / timeout / reset — normal for proxy clients, not actionable.
         } finally {
             runCatching { socket.close() }
             clientSockets.remove(socket)
@@ -141,7 +136,6 @@ class HttpProxyServer(
         }
     }
 
-    /** Keep-alive request loop for one client connection. */
     private fun serve(input: InputStream, output: OutputStream) {
         var keepAlive = true
         while (keepAlive && running.get()) {
@@ -154,7 +148,7 @@ class HttpProxyServer(
             when (request.kind) {
                 RequestKind.CONNECT -> {
                     handleConnect(request, input, output)
-                    return // tunnel ends the client connection
+                    return
                 }
                 RequestKind.PLAIN -> {
                     if (captivePortalEnabled) {
@@ -169,34 +163,17 @@ class HttpProxyServer(
 
     // ── Captive portal ────────────────────────────────────────────────────
 
-    /**
-     * When captive portal is enabled, intercept plain HTTP requests and
-     * return a setup page that auto-configures the proxy on the client.
-     * This is the key consumer-friendly feature: when a PC opens a browser,
-     * instead of "no internet," it sees a one-click setup page.
-     *
-     * Special paths:
-     *   /proxy.pac  → PAC file for auto-proxy configuration
-     *   /setup      → the setup page (HTML)
-     *   everything else → 302 redirect to /setup
-     */
     private fun handleCaptivePortal(
         request: Request,
         input: InputStream,
         output: OutputStream,
     ): Boolean {
         val path = request.path
-        // Use the actual bound port, not the request port (which defaults to 80)
         val host = request.host
         val portNum = boundPort
         val proxyAddr = "$host:$portNum"
 
-        // Absolute-form requests (GET http://example.com/ ...) are proxy
-        // requests from configured clients — forward them to the internet.
-        // Only intercept origin-form requests (GET / ...) from unconfigured
-        // browsers.
         if (request.absoluteTarget) {
-            // This is a properly configured proxy request — forward it
             return handleHttp(request, input, output)
         }
 
@@ -209,26 +186,17 @@ class HttpProxyServer(
                 serveSetupPage(output, proxyAddr)
             }
             else -> {
-                // Redirect to setup page using the actual bind address (not the request Host)
                 val setupUrl = "http://$bindHost:$portNum/setup"
                 runCatching {
-                    output.write(
-                        "HTTP/1.1 302 Found\r\n".toByteArray(Charsets.ISO_8859_1),
-                    )
-                    output.write(
-                        "Location: $setupUrl\r\n".toByteArray(Charsets.ISO_8859_1),
-                    )
-                    output.write(
-                        "Content-Length: 0\r\n".toByteArray(Charsets.ISO_8859_1),
-                    )
-                    output.write(
-                        "Connection: close\r\n\r\n".toByteArray(Charsets.ISO_8859_1),
-                    )
+                    output.write("HTTP/1.1 302 Found\r\n".toByteArray(Charsets.ISO_8859_1))
+                    output.write("Location: $setupUrl\r\n".toByteArray(Charsets.ISO_8859_1))
+                    output.write("Content-Length: 0\r\n".toByteArray(Charsets.ISO_8859_1))
+                    output.write("Connection: close\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
                     output.flush()
                 }
             }
         }
-        return false // close after response
+        return false
     }
 
     private fun servePacFile(output: OutputStream, host: String, port: Int) {
@@ -253,6 +221,8 @@ class HttpProxyServer(
         val html = SETUP_PAGE_HTML
             .replace("{{PROXY_ADDR}}", proxyAddr)
             .replace("{{PAC_URL}}", pacUrl)
+            .replace("{{PROXY_HOST}}", proxyAddr.substringBefore(':'))
+            .replace("{{PROXY_PORT}}", proxyAddr.substringAfter(':'))
         val body = html.toByteArray(Charsets.UTF_8)
         runCatching {
             output.write("HTTP/1.1 200 OK\r\n".toByteArray(Charsets.ISO_8859_1))
@@ -279,8 +249,6 @@ class HttpProxyServer(
         val keepAlive: Boolean,
         val contentLength: Long,
         val chunked: Boolean,
-        /** True when the original request target was an absolute URL
-         *  (e.g. GET http://example.com/path). */
         val absoluteTarget: Boolean = false,
     )
 
@@ -292,10 +260,6 @@ class HttpProxyServer(
         val target = parts[1]
         val version = parts[2]
 
-        // Header names keep their ORIGINAL case (HTTP names are
-        // case-insensitive and real servers may parse them case-sensitively,
-        // so a faithful proxy forwards them as received); all internal
-        // matching below is case-insensitive.
         val headers = ArrayList<Pair<String, String>>(head.size - 1)
         for (i in 1 until head.size) {
             val idx = head[i].indexOf(':')
@@ -356,12 +320,10 @@ class HttpProxyServer(
                 absoluteTarget = true,
             )
         } else {
-            // Origin-form: the target is the path; the Host header has the host.
             val hostHeader = headers
                 .firstOrNull { it.first.equals("host", ignoreCase = true) }?.second
                 ?: return null
             if (hostHeader.startsWith("[")) {
-                // IPv6 literal [::1]:8080
                 val close = hostHeader.indexOf(']')
                 if (close < 0) return null
                 host = hostHeader.substring(0, close + 1)
@@ -388,10 +350,7 @@ class HttpProxyServer(
 
     // ── Plain HTTP forwarding ───────────────────────────────────────────────
 
-    /** Returns whether the CLIENT connection may stay alive. */
     private fun handleHttp(req: Request, input: InputStream, output: OutputStream): Boolean {
-        // Refuse destinations a joined client must never reach through the
-        // phone (the host's own LAN, loopback, link-local).
         if (!destinationPolicy.allow(req.host)) {
             writeSimpleResponse(output, 403, "Forbidden")
             return false
@@ -400,11 +359,10 @@ class HttpProxyServer(
         try {
             origin.connect(InetSocketAddress(req.host, req.port), CONNECT_TIMEOUT_MS)
             origin.soTimeout = IDLE_TIMEOUT_MS
-            origin.tcpNoDelay = true  // minimize latency
+            origin.tcpNoDelay = true
             val originInput = BufferedInputStream(origin.getInputStream(), BUFFER)
             val originOutput = BufferedOutputStream(origin.getOutputStream(), BUFFER)
 
-            // Request head: forward the client's, minus hop-by-hop headers.
             val head = StringBuilder()
             head.append(req.method).append(' ').append(req.path).append(" HTTP/1.1\r\n")
             var hasHost = false
@@ -415,19 +373,15 @@ class HttpProxyServer(
                 head.append(name).append(": ").append(value).append("\r\n")
             }
             if (!hasHost) head.append("Host: ").append(req.host).append("\r\n")
-            // One request per origin connection keeps response framing simple and
-            // guarantees close-delimited responses are unambiguous.
             head.append("Connection: close\r\n\r\n")
             originOutput.write(head.toString().toByteArray(Charsets.ISO_8859_1))
 
-            // Request body.
             when {
                 req.chunked -> forwardChunked(input, originOutput, stats.bytesFromClients)
                 req.contentLength > 0L -> copyN(input, originOutput, req.contentLength, stats.bytesFromClients)
             }
             originOutput.flush()
 
-            // Response head.
             val responseHead = readHead(originInput) ?: return false
             if (responseHead.isEmpty()) return false
             val responseHeaders = ArrayList<Pair<String, String>>(responseHead.size - 1)
@@ -459,9 +413,6 @@ class HttpProxyServer(
             output.write(outHead.toString().toByteArray(Charsets.ISO_8859_1))
             output.flush()
 
-            // Response body. ALWAYS flush after writing: the socket may be
-            // closed right after this method returns, and closing the raw
-            // socket discards anything still sitting in the BufferedOutputStream.
             return when {
                 isHead -> req.keepAlive
                 responseChunked -> {
@@ -475,8 +426,6 @@ class HttpProxyServer(
                     req.keepAlive
                 }
                 else -> {
-                    // Close-delimited body: the origin closes after the response,
-                    // so the client connection cannot be kept alive.
                     copyUntilEof(originInput, output, stats.bytesToClients)
                     output.flush()
                     false
@@ -489,7 +438,7 @@ class HttpProxyServer(
         }
     }
 
-    // ── CONNECT tunneling (HTTPS, WSS, anything over TLS) ───────────────────
+    // ── CONNECT tunneling ───────────────────────────────────────────────────
 
     private fun handleConnect(req: Request, input: InputStream, output: OutputStream) {
         if (!destinationPolicy.allow(req.host)) {
@@ -503,17 +452,11 @@ class HttpProxyServer(
         try {
             origin.connect(InetSocketAddress(req.host, req.port), CONNECT_TIMEOUT_MS)
             origin.soTimeout = IDLE_TIMEOUT_MS
-            origin.tcpNoDelay = true  // minimize latency
+            origin.tcpNoDelay = true
             output.write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
             output.flush()
 
             val done = AtomicBoolean(false)
-            // Both directions must be fully exception-safe: when one pump ends
-            // (EOF, timeout, or the proxy stopping) it closes its stream, which
-            // closes the shared socket — the peer thread may then hit a
-            // "Socket is closed" on getInputStream()/getOutputStream() before
-            // its own pump starts. An uncaught exception on either raw Thread
-            // would crash the whole process, so swallow it here.
             val upstream = Thread {
                 runCatching { pump(input, origin.getOutputStream(), stats.bytesFromClients, done) }
             }
@@ -577,7 +520,6 @@ class HttpProxyServer(
         }
     }
 
-    /** Forwards a chunked body verbatim (chunk sizes + data + trailers). */
     private fun forwardChunked(from: InputStream, to: OutputStream, counter: AtomicLong) {
         while (true) {
             val sizeLine = readLine(from) ?: return
@@ -585,7 +527,6 @@ class HttpProxyServer(
             writeLine(to, sizeLine)
             counter.addAndGet(sizeLine.length.toLong() + 2)
             if (size == 0L) {
-                // Trailers until the blank line.
                 while (true) {
                     val trailer = readLine(from) ?: return
                     writeLine(to, trailer)
@@ -599,10 +540,6 @@ class HttpProxyServer(
         }
     }
 
-    /**
-     * Reads the request/response head (request line + headers) up to the blank
-     * line. Returns null on EOF or when the head exceeds size limits.
-     */
     private fun readHead(input: InputStream): List<String>? {
         val lines = ArrayList<String>(16)
         var total = 0
@@ -615,7 +552,6 @@ class HttpProxyServer(
         }
     }
 
-    /** Reads one CRLF/LF-terminated line, trimmed of the line ending. */
     private fun readLine(input: InputStream): String? {
         val buf = ByteArray(MAX_LINE_SIZE)
         var count = 0
@@ -623,7 +559,6 @@ class HttpProxyServer(
             val b = input.read()
             if (b < 0) return if (count == 0) null else String(buf, 0, count, Charsets.ISO_8859_1)
             if (b == '\n'.code) {
-                // strip trailing \r
                 val end = if (count > 0 && buf[count - 1] == '\r'.code.toByte()) count - 1 else count
                 return String(buf, 0, end, Charsets.ISO_8859_1)
             }
@@ -656,7 +591,7 @@ class HttpProxyServer(
     private fun isHopByHop(name: String): Boolean = name.lowercase() in HOP_BY_HOP_HEADERS
 
     companion object {
-        private const val BUFFER = 64 * 1024  // 64 KB — maximize throughput
+        private const val BUFFER = 64 * 1024
         private const val MAX_CONNECTIONS = 64
         private const val IDLE_TIMEOUT_MS = 120_000
         private const val CONNECT_TIMEOUT_MS = 10_000
@@ -666,7 +601,6 @@ class HttpProxyServer(
 
         private val CRLF = byteArrayOf(0x0D, 0x0A)
 
-        // RFC 2616 §13.5.1 hop-by-hop headers — must not be forwarded.
         private val HOP_BY_HOP_HEADERS = setOf(
             "connection",
             "keep-alive",
@@ -679,215 +613,184 @@ class HttpProxyServer(
             "upgrade",
         )
 
-        /**
-         * Consumer-friendly setup page served by the captive portal.
-         * When a PC opens a browser on the ShareNet hotspot, this page
-         * auto-configures the proxy so the user can browse immediately.
-         */
         private val SETUP_PAGE_HTML = """
-            |<!DOCTYPE html>
-            |<html lang="en">
-            |<head>
-            |  <meta charset="utf-8">
-            |  <meta name="viewport" content="width=device-width, initial-scale=1">
-            |  <title>ShareNet</title>
-            |  <style>
-            |    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-            |    * { box-sizing: border-box; margin: 0; padding: 0; }
-            |    body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            |           background: #09090b; color: #fafafa; min-height: 100vh; overflow-x: hidden; }
-            |    .container { max-width: 560px; margin: 0 auto; padding: 48px 24px; }
-            |    .hero { text-align: center; margin-bottom: 40px; }
-            |    .logo { width: 56px; height: 56px; background: linear-gradient(135deg, #06b6d4, #3b82f6);
-            |            border-radius: 16px; display: flex; align-items: center; justify-content: center;
-            |            font-size: 28px; margin: 0 auto 20px; box-shadow: 0 8px 32px rgba(6,182,212,0.3); }
-            |    .hero h1 { font-size: 1.75em; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 8px; }
-            |    .hero p { color: #a1a1aa; font-size: 0.95em; line-height: 1.6; }
-            |    .status { display: inline-flex; align-items: center; gap: 8px; background: #052e16;
-            |              border: 1px solid #166534; border-radius: 100px; padding: 6px 16px;
-            |              font-size: 0.85em; color: #4ade80; margin-bottom: 32px; }
-            |    .status-dot { width: 8px; height: 8px; background: #4ade80; border-radius: 50%;
-            |                   animation: pulse 2s infinite; }
-            |    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
-            |    .card { background: #18181b; border: 1px solid #27272a; border-radius: 16px;
-            |            padding: 24px; margin-bottom: 16px; }
-            |    .card-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
-            |    .card-icon { width: 36px; height: 36px; border-radius: 10px; display: flex;
-            |                  align-items: center; justify-content: center; font-size: 18px; }
-            |    .card-icon.green { background: #052e16; }
-            |    .card-icon.blue { background: #0c1e3a; }
-            |    .card-icon.purple { background: #1e1033; }
-            |    .card h2 { font-size: 1em; font-weight: 600; }
-            |    .card p.desc { color: #71717a; font-size: 0.85em; margin-top: 2px; }
-            |    .cmd-box { background: #09090b; border: 1px solid #27272a; border-radius: 12px;
-            |               padding: 14px 16px; margin-top: 12px; position: relative; cursor: pointer;
-            |               transition: border-color 0.2s; }
-            |    .cmd-box:hover { border-color: #3f3f46; }
-            |    .cmd-box:active { border-color: #06b6d4; }
-            |    .cmd-label { font-size: 0.7em; text-transform: uppercase; letter-spacing: 0.08em;
-            |                 color: #52525b; margin-bottom: 6px; font-weight: 600; }
-            |    .cmd-text { font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace;
-            |                font-size: 0.82em; color: #4ade80; line-height: 1.6; word-break: break-all; }
-            |    .copy-hint { position: absolute; top: 12px; right: 12px; font-size: 0.75em;
-            |                  color: #52525b; background: #18181b; padding: 4px 8px; border-radius: 6px;
-            |                  border: 1px solid #27272a; }
-            |    .copy-hint:hover { color: #a1a1aa; }
-            |    .proxy-badge { display: flex; align-items: center; justify-content: space-between;
-            |                   background: #09090b; border: 1px solid #27272a; border-radius: 12px;
-            |                   padding: 12px 16px; margin-top: 12px; }
-            |    .proxy-badge span { font-family: 'SF Mono', Consolas, monospace; font-size: 0.9em;
-            |                        color: #06b6d4; font-weight: 600; }
-            |    .proxy-label { font-size: 0.8em; color: #71717a; }
-            |    .platforms { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;
-            |                 margin-top: 16px; }
-            |    .plat-btn { background: #09090b; border: 1px solid #27272a; border-radius: 10px;
-            |                padding: 10px 8px; text-align: center; cursor: pointer;
-            |                transition: all 0.2s; font-size: 0.82em; color: #71717a; }
-            |    .plat-btn:hover { border-color: #3f3f46; color: #a1a1aa; }
-            |    .plat-btn.active { border-color: #06b6d4; background: #0c1e3a; color: #06b6d4; font-weight: 600; }
-            |    .plat-btn .icon { font-size: 1.4em; display: block; margin-bottom: 4px; }
-            |    .steps { margin-top: 16px; }
-            |    .step { display: flex; align-items: flex-start; gap: 12px; padding: 10px 0; }
-            |    .step + .step { border-top: 1px solid #27272a; }
-            |    .step-num { width: 24px; height: 24px; background: #27272a; border-radius: 8px;
-            |                display: flex; align-items: center; justify-content: center;
-            |                font-size: 0.75em; font-weight: 700; color: #a1a1aa; flex-shrink: 0;
-            |                margin-top: 1px; }
-            |    .step-text { font-size: 0.88em; line-height: 1.6; color: #d4d4d8; }
-            |    .step-text strong { color: #fafafa; }
-            |    code { background: #27272a; padding: 2px 7px; border-radius: 5px;
-            |           font-family: 'SF Mono', Consolas, monospace; font-size: 0.88em;
-            |           color: #4ade80; }
-            |    .footer { text-align: center; margin-top: 32px; padding-top: 24px;
-            |              border-top: 1px solid #18181b; }
-            |    .footer p { font-size: 0.8em; color: #3f3f46; line-height: 1.6; }
-            |    .tag { display: inline-block; background: #18181b; border: 1px solid #27272a;
-            |           border-radius: 6px; padding: 2px 8px; font-size: 0.75em; color: #71717a;
-            |           margin-top: 8px; }
-            |  </style>
-            |</head>
-            |<body>
-            |  <div class="container">
-            |    <div class="hero">
-            |      <div class="logo">⚡</div>
-            |      <h1>ShareNet</h1>
-            |      <div class="status"><div class="status-dot"></div> Connected — internet ready</div>
-            |      <p>You're connected to a shared network.<br>Configure your proxy to start browsing.</p>
-            |    </div>
-            |
-            |    <div class="card">
-            |      <div class="card-header">
-            |        <div class="card-icon green">⚡</div>
-            |        <div>
-            |          <h2>Quick Setup</h2>
-            |          <p class="desc">One command to enable internet access</p>
-            |        </div>
-            |      </div>
-            |      <div class="cmd-box" onclick="copyCmd(this)" title="Click to copy">
-            |        <div class="copy-hint">click to copy</div>
-            |        <div class="cmd-label">Terminal command</div>
-            |        <div class="cmd-text" id="cmd">gsettings set org.gnome.system.proxy mode 'manual' && gsettings set org.gnome.system.proxy.http host '192.168.49.1' && gsettings set org.gnome.system.proxy.http port 8080 && gsettings set org.gnome.system.proxy.https host '192.168.49.1' && gsettings set org.gnome.system.proxy.https port 8080</div>
-            |      </div>
-            |      <div style="margin-top:10px;font-size:0.82em;color:#52525b;">Firefox users: paste <code>{{PROXY_ADDR}}</code> in Settings → Network Settings</div>
-            |    </div>
-            |
-            |    <div class="card">
-            |      <div class="card-header">
-            |        <div class="card-icon blue">📋</div>
-            |        <div>
-            |          <h2>Manual Setup</h2>
-            |          <p class="desc">Step-by-step for your operating system</p>
-            |        </div>
-            |      </div>
-            |      <div class="proxy-badge">
-            |        <div><div class="proxy-label">Proxy address</div></div>
-            |        <span>{{PROXY_ADDR}}</span>
-            |      </div>
-            |      <div class="platforms">
-            |        <div class="plat-btn active" onclick="showPlat('win',this)"><span class="icon">🪟</span>Windows</div>
-            |        <div class="plat-btn" onclick="showPlat('mac',this)"><span class="icon">🍎</span>Mac</div>
-            |        <div class="plat-btn" onclick="showPlat('lin',this)"><span class="icon">🐧</span>Linux</div>
-            |        <div class="plat-btn" onclick="showPlat('and',this)"><span class="icon">📱</span>Android</div>
-            |      </div>
-            |      <div class="steps">
-            |        <div id="plat-win" style="display:block">
-            |          <div class="step"><div class="step-num">1</div><div class="step-text">Open <strong>Settings</strong> → Network & Internet → <strong>Proxy</strong></div></div>
-            |          <div class="step"><div class="step-num">2</div><div class="step-text">Turn on <strong>Use a proxy server</strong></div></div>
-            |          <div class="step"><div class="step-num">3</div><div class="step-text">Enter <code>{{PROXY_ADDR}}</code></div></div>
-            |          <div class="step"><div class="step-num">4</div><div class="step-text">Click <strong>Save</strong></div></div>
-            |        </div>
-            |        <div id="plat-mac" style="display:none">
-            |          <div class="step"><div class="step-num">1</div><div class="step-text">Open <strong>System Settings</strong> → Network → Wi-Fi</div></div>
-            |          <div class="step"><div class="step-num">2</div><div class="step-text">Click <strong>Details</strong> → <strong>Proxies</strong> tab</div></div>
-            |          <div class="step"><div class="step-num">3</div><div class="step-text">Enable <strong>Web Proxy</strong> & <strong>Secure Web Proxy</strong></div></div>
-            |          <div class="step"><div class="step-num">4</div><div class="step-text">Enter <code>{{PROXY_ADDR}}</code></div></div>
-            |        </div>
-            |        <div id="plat-lin" style="display:none">
-            |          <div class="step"><div class="step-num">1</div><div class="step-text">Open <strong>Settings</strong> → Network → <strong>Network Proxy</strong></div></div>
-            |          <div class="step"><div class="step-num">2</div><div class="step-text">Set Method to <strong>Manual</strong></div></div>
-            |          <div class="step"><div class="step-num">3</div><div class="step-text">Enter HTTP Proxy: <code>{{PROXY_ADDR}}</code></div></div>
-            |          <div class="step"><div class="step-num">4</div><div class="step-text">Click <strong>Apply</strong></div></div>
-            |        </div>
-            |        <div id="plat-and" style="display:none">
-            |          <div class="step"><div class="step-num">1</div><div class="step-text">Long-press the connected Wi-Fi → <strong>Modify</strong></div></div>
-            |          <div class="step"><div class="step-num">2</div><div class="step-text">Advanced options → Proxy → <strong>Manual</strong></div></div>
-            |          <div class="step"><div class="step-num">3</div><div class="step-text">Enter <code>{{PROXY_ADDR}}</code></div></div>
-            |        </div>
-            |      </div>
-            |    </div>
-            |
-            |    <div class="card" style="border-color:#1e1033;">
-            |      <div class="card-header">
-            |        <div class="card-icon purple">🚀</div>
-            |        <div>
-            |          <h2>Full Access Mode</h2>
-            |          <p class="desc">For chat apps, games, and all other apps</p>
-            |        </div>
-            |      </div>
-            |      <p style="font-size:0.85em;color:#a1a1aa;line-height:1.6;margin-bottom:12px;">The proxy above covers web browsing. For <strong>all apps</strong> (WhatsApp, Telegram, etc.), run this transparent tunnel:</p>
-            |      <div class="cmd-box" onclick="copyTunnel(this)" title="Click to copy">
-            |        <div class="copy-hint">click to copy</div>
-            |        <div class="cmd-label">Terminal command</div>
-            |        <div class="cmd-text" id="tunnel-cmd">curl -sL https://raw.githubusercontent.com/Oluwanifemi-engineer/ShareNet/main/scripts/setup-transparent-tunnel.sh | bash -s -- 192.168.49.1 1080</div>
-            |      </div>
-            |      <p style="font-size:0.78em;color:#52525b;margin-top:8px;">Requires sudo. To stop: <code style="font-size:0.85em;">curl -sL ...setup-transparent-tunnel.sh | bash -s -- --stop</code></p>
-            |    </div>
-            |
-            |    <div class="footer">
-            |      <p>To undo: set proxy back to <strong>Off</strong> or <strong>Automatic</strong></p>
-            |      <div class="tag">ShareNet v1.0</div>
-            |    </div>
-            |  </div>
-            |
-            |  <script>
-            |    function showPlat(id, el) {
-            |      document.querySelectorAll('[id^=plat-]').forEach(p => p.style.display='none');
-            |      document.querySelectorAll('.plat-btn').forEach(b => b.classList.remove('active'));
-            |      document.getElementById('plat-'+id).style.display='block';
-            |      el.classList.add('active');
-            |    }
-            |    function copyCmd(el) {
-            |      const text = document.getElementById('cmd').textContent;
-            |      navigator.clipboard.writeText(text).then(() => {
-            |        const hint = el.querySelector('.copy-hint');
-            |        hint.textContent = '✓ copied!';
-            |        hint.style.color = '#4ade80';
-            |        setTimeout(() => { hint.textContent = 'click to copy'; hint.style.color = ''; }, 2000);
-            |      });
-            |    }
-            |    function copyTunnel(el) {
-            |      const text = document.getElementById('tunnel-cmd').textContent;
-            |      navigator.clipboard.writeText(text).then(() => {
-            |        const hint = el.querySelector('.copy-hint');
-            |        hint.textContent = '✓ copied!';
-            |        hint.style.color = '#4ade80';
-            |        setTimeout(() => { hint.textContent = 'click to copy'; hint.style.color = ''; }, 2000);
-            |      });
-            |    }
-            |  </script>
-            |</body>
-            |</html>
-        """.trimMargin()
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ShareNet</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+background:#111;color:#f5f5f5;min-height:100vh}
+.wrap{max-width:520px;margin:0 auto;padding:56px 20px 40px}
+.logo{display:flex;align-items:center;gap:10px;margin-bottom:32px}
+.logo-mark{width:32px;height:32px;background:linear-gradient(135deg,#22c55e,#16a34a);
+border-radius:8px;display:flex;align-items:center;justify-content:center;
+font-size:16px;font-weight:700;color:#fff}
+.logo-text{font-size:15px;font-weight:600;letter-spacing:-0.01em}
+.hdr{margin-bottom:40px}
+.hdr h1{font-size:24px;font-weight:700;letter-spacing:-0.02em;margin-bottom:6px}
+.hdr p{font-size:14px;color:#888;line-height:1.5}
+.chip{display:inline-flex;align-items:center;gap:6px;margin-top:10px;
+font-size:12px;color:#22c55e;font-weight:500}
+.dot{width:6px;height:6px;background:#22c55e;border-radius:50%;
+animation:blink 2s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+.field{margin-bottom:24px}
+.field-label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+color:#555;font-weight:600;margin-bottom:6px}
+.field-addr{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:10px;
+padding:14px 16px;display:flex;align-items:center;justify-content:space-between}
+.field-addr span{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+font-size:16px;font-weight:600;color:#22c55e;letter-spacing:0.5px}
+.copy-btn{background:#222;border:1px solid #333;border-radius:8px;
+padding:6px 12px;font-size:12px;color:#aaa;cursor:pointer;
+transition:all .15s;font-weight:500}
+.copy-btn:hover{background:#333;color:#fff;border-color:#444}
+.copy-btn:active{transform:scale(.97)}
+.copy-btn.copied{color:#22c55e;border-color:#22c55e}
+.os-tabs{display:flex;gap:0;margin-bottom:0}
+.os-tab{flex:1;padding:10px 0;text-align:center;font-size:13px;font-weight:500;
+color:#555;background:#161616;border:1px solid #2a2a2a;cursor:pointer;
+transition:all .15s;user-select:none}
+.os-tab:first-child{border-radius:10px 0 0 0}
+.os-tab:last-child{border-radius:0 10px 0 0}
+.os-tab+.os-tab{border-left:none}
+.os-tab:hover{color:#aaa}
+.os-tab.active{color:#f5f5f5;background:#1a1a1a;border-bottom-color:#1a1a1a}
+.os-panel{background:#1a1a1a;border:1px solid #2a2a2a;border-top:none;
+border-radius:0 0 10px 10px;padding:20px;display:none}
+.os-panel.active{display:block}
+.os-panel p{font-size:13px;color:#999;line-height:1.6;margin-bottom:12px}
+.os-panel ol{padding-left:18px;margin:0}
+.os-panel li{font-size:13px;color:#ccc;line-height:2}
+.os-panel li strong{color:#f5f5f5}
+.step-cmd{background:#111;border:1px solid #2a2a2a;border-radius:8px;
+padding:10px 14px;margin:10px 0;font-family:ui-monospace,SFMono-Regular,monospace;
+font-size:12px;color:#22c55e;word-break:break-all;line-height:1.5;
+cursor:pointer;transition:border-color .15s;position:relative}
+.step-cmd:hover{border-color:#3a3a3a}
+.step-cmd .tag{position:absolute;top:8px;right:10px;font-size:10px;
+color:#555;font-family:system-ui,sans-serif;text-transform:uppercase;
+letter-spacing:.06em}
+.divider{height:1px;background:#222;margin:28px 0}
+.foot{text-align:center;margin-top:28px}
+.foot p{font-size:11px;color:#444;line-height:1.6}
+.foot a{color:#555;text-decoration:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="logo">
+    <div class="logo-mark">S</div>
+    <div class="logo-text">ShareNet</div>
+  </div>
+
+  <div class="hdr">
+    <h1>Connected to ShareNet</h1>
+    <p>Set up your proxy to access the internet through this device.</p>
+    <div class="chip"><div class="dot"></div> Internet is available</div>
+  </div>
+
+  <div class="field">
+    <div class="field-label">Proxy Address</div>
+    <div class="field-addr">
+      <span>{{PROXY_ADDR}}</span>
+      <button class="copy-btn" onclick="copyText('{{PROXY_ADDR}}',this)">Copy</button>
+    </div>
+  </div>
+
+  <div>
+    <div class="os-tabs">
+      <div class="os-tab active" onclick="switchOS('win',this)">Windows</div>
+      <div class="os-tab" onclick="switchOS('mac',this)">macOS</div>
+      <div class="os-tab" onclick="switchOS('lin',this)">Linux</div>
+      <div class="os-tab" onclick="switchOS('and',this)">Android</div>
+    </div>
+
+    <div class="os-panel active" id="p-win">
+      <p>One-click setup via PowerShell:</p>
+      <div class="step-cmd" onclick="copyText(this.getAttribute('data-cmd'),this)">
+        <span class="tag">Copy</span>
+        powershell -Command "Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\Internet Settings' -Name ProxyEnable -Value 1; Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\Internet Settings' -Name ProxyServer -Value '{{PROXY_ADDR}}'"
+      </div>
+      <p style="margin-top:8px">Then open <strong>Internet Options</strong> → Connections → LAN Settings to verify. This configures the system proxy for browsers and most apps.</p>
+      <div class="divider"></div>
+      <p>To undo:</p>
+      <div class="step-cmd" onclick="copyText(this.getAttribute('data-cmd'),this)">
+        <span class="tag">Copy</span>
+        powershell -Command "Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\Internet Settings' -Name ProxyEnable -Value 0"
+      </div>
+    </div>
+
+    <div class="os-panel" id="p-mac">
+      <p>One-click setup via Terminal:</p>
+      <div class="step-cmd" onclick="copyText(this.getAttribute('data-cmd'),this)">
+        <span class="tag">Copy</span>
+        networksetup -setwebproxy Wi-Fi {{PROXY_HOST}} {{PROXY_PORT}} &amp;&amp; networksetup -setsecurewebproxy Wi-Fi {{PROXY_HOST}} {{PROXY_PORT}} &amp;&amp; networksetup -setwebproxystate Wi-Fi on &amp;&amp; networksetup -setsecurewebproxystate Wi-Fi on
+      </div>
+      <p style="margin-top:8px">Paste into <strong>Terminal</strong>. You may be prompted for your Mac password.</p>
+      <div class="divider"></div>
+      <p>To undo:</p>
+      <div class="step-cmd" onclick="copyText(this.getAttribute('data-cmd'),this)">
+        <span class="tag">Copy</span>
+        networksetup -setwebproxystate Wi-Fi off &amp;&amp; networksetup -setsecurewebproxystate Wi-Fi off
+      </div>
+    </div>
+
+    <div class="os-panel" id="p-lin">
+      <p>One-click setup via Terminal:</p>
+      <div class="step-cmd" onclick="copyText(this.getAttribute('data-cmd'),this)">
+        <span class="tag">Copy</span>
+        gsettings set org.gnome.system.proxy mode 'manual' &amp;&amp; gsettings set org.gnome.system.proxy.http host '{{PROXY_HOST}}' &amp;&amp; gsettings set org.gnome.system.proxy.http port {{PROXY_PORT}} &amp;&amp; gsettings set org.gnome.system.proxy.https host '{{PROXY_HOST}}' &amp;&amp; gsettings set org.gnome.system.proxy.https port {{PROXY_PORT}}
+      </div>
+      <p style="margin-top:8px">Paste into <strong>Terminal</strong>. Works for GNOME-based desktops (Ubuntu, Fedora).</p>
+      <div class="divider"></div>
+      <p>To undo:</p>
+      <div class="step-cmd" onclick="copyText(this.getAttribute('data-cmd'),this)">
+        <span class="tag">Copy</span>
+        gsettings set org.gnome.system.proxy mode 'none'
+      </div>
+    </div>
+
+    <div class="os-panel" id="p-and">
+      <ol>
+        <li>Open <strong>Settings</strong> → <strong>Wi-Fi</strong></li>
+        <li>Tap the connected network → <strong>Modify</strong></li>
+        <li>Advanced → <strong>Proxy</strong> → <strong>Manual</strong></li>
+        <li>Set Hostname: <strong>{{PROXY_HOST}}</strong></li>
+        <li>Set Port: <strong>{{PROXY_PORT}}</strong></li>
+        <li>Tap <strong>Save</strong></li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="foot">
+    <p>To undo: disable the proxy or set mode back to Off / Automatic</p>
+  </div>
+</div>
+
+<script>
+function switchOS(os,el){
+  document.querySelectorAll('.os-panel').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.os-tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById('p-'+os).classList.add('active');
+  el.classList.add('active');
+}
+function copyText(txt,el){
+  navigator.clipboard.writeText(txt).then(()=>{
+    el.classList.add('copied');
+    var orig=el.innerHTML;
+    el.innerHTML='Copied';
+    setTimeout(()=>{el.innerHTML=orig;el.classList.remove('copied')},1500);
+  });
+}
+</script>
+</body>
+</html>
+""".trimIndent()
     }
 }
 
