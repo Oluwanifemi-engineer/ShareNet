@@ -372,6 +372,10 @@ class HttpProxyServer(
             writeSimpleResponse(output, 403, "Forbidden")
             return false
         }
+
+        // Detect WebSocket upgrade: preserve Connection/Upgrade headers and switch to pump mode
+        val isWebSocket = req.headers.any { it.first.equals("upgrade", ignoreCase = true) && it.second.lowercase().contains("websocket") }
+
         val origin = Socket()
         try {
             origin.connect(InetSocketAddress(req.host, req.port), CONNECT_TIMEOUT_MS)
@@ -385,12 +389,20 @@ class HttpProxyServer(
             var hasHost = false
             for ((name, value) in req.headers) {
                 val lower = name.lowercase()
-                if (isHopByHop(lower) && !(lower == "transfer-encoding" && req.chunked)) continue
+                // For WebSocket: preserve Connection and Upgrade headers
+                if (isHopByHop(lower) && !(isWebSocket && (lower == "connection" || lower == "upgrade"))) continue
+                if (lower == "transfer-encoding" && !req.chunked) continue
                 if (lower == "host") hasHost = true
                 head.append(name).append(": ").append(value).append("\r\n")
             }
             if (!hasHost) head.append("Host: ").append(req.host).append("\r\n")
-            head.append("Connection: close\r\n\r\n")
+            if (isWebSocket) {
+                head.append("Connection: Upgrade\r\n")
+                head.append("Upgrade: websocket\r\n")
+            } else {
+                head.append("Connection: close\r\n")
+            }
+            head.append("\r\n")
             originOutput.write(head.toString().toByteArray(Charsets.ISO_8859_1))
 
             when {
@@ -429,6 +441,23 @@ class HttpProxyServer(
             outHead.append("\r\n")
             output.write(outHead.toString().toByteArray(Charsets.ISO_8859_1))
             output.flush()
+
+            // WebSocket upgrade: after 101, switch to bidirectional pump
+            val isUpgrade = responseHead[0].contains("101")
+            if (isWebSocket && isUpgrade) {
+                val done = AtomicBoolean(false)
+                val upstream = Thread {
+                    runCatching { pump(input, origin.getOutputStream(), stats.bytesFromClients, done) }
+                }
+                val downstream = Thread {
+                    runCatching { pump(originInput, output, stats.bytesToClients, done) }
+                }
+                upstream.start()
+                downstream.start()
+                upstream.join()
+                downstream.join()
+                return false
+            }
 
             return when {
                 isHead -> req.keepAlive
@@ -482,8 +511,10 @@ class HttpProxyServer(
             }
             upstream.start()
             downstream.start()
-            upstream.join(TUNNEL_JOIN_TIMEOUT_MS)
-            downstream.join(TUNNEL_JOIN_TIMEOUT_MS)
+            // Wait indefinitely — let pump threads run as long as the
+            // connection is alive. Idle detection handled by socket soTimeout.
+            upstream.join()
+            downstream.join()
         } catch (_: Exception) {
             runCatching {
                 output.write("HTTP/1.1 502 Bad Gateway\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
@@ -509,7 +540,8 @@ class HttpProxyServer(
         } catch (_: Exception) {
         } finally {
             done.set(true)
-            runCatching { to.close() }
+            // Do NOT close 'to' — the other thread may still be reading from it.
+            // The caller (handleConnect) closes the origin socket after both threads finish.
         }
     }
 
@@ -533,6 +565,7 @@ class HttpProxyServer(
             val n = from.read(buf)
             if (n < 0) return
             to.write(buf, 0, n)
+            to.flush()
             counter.addAndGet(n.toLong())
         }
     }
@@ -627,7 +660,7 @@ class HttpProxyServer(
             "te",
             "trailer",
             "transfer-encoding",
-            "upgrade",
+            // NOTE: 'upgrade' is NOT here — it must be forwarded for WebSocket support
         )
 
         private val SETUP_PAGE_HTML = """
@@ -1012,33 +1045,56 @@ function switchTab(id, el) {
   document.getElementById('p-' + id).classList.add('active');
   el.classList.add('active');
 }
+function copyToClipboard(txt) {
+  var ta = document.createElement('textarea');
+  ta.value = txt;
+  ta.style.position = 'fixed';
+  ta.style.left = '-9999px';
+  document.body.appendChild(ta);
+  ta.select();
+  var ok = false;
+  try { ok = document.execCommand('copy'); } catch(e) {}
+  document.body.removeChild(ta);
+  if (!ok) { try { navigator.clipboard.writeText(txt); ok = true; } catch(e) {} }
+  return ok;
+}
+function flashButton(el, msg) {
+  el.classList.add('done');
+  var orig = el.innerHTML;
+  el.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 8l3.5 3.5L13 5"/></svg> ' + msg;
+  setTimeout(function() { el.innerHTML = orig; el.classList.remove('done'); }, 2000);
+}
+function flashCode(el) {
+  el.classList.add('done');
+  el.querySelector('.code-tag').textContent = 'Copied!';
+  setTimeout(function() { el.classList.remove('done'); el.querySelector('.code-tag').textContent = 'Copy'; }, 2000);
+}
 function copyValue(txt, el) {
-  navigator.clipboard.writeText(txt).then(function() {
-    el.classList.add('done');
-    var orig = el.innerHTML;
-    el.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 8l3.5 3.5L13 5"/></svg> Copied';
-    setTimeout(function() { el.innerHTML = orig; el.classList.remove('done'); }, 1500);
-  });
+  copyToClipboard(txt);
+  flashButton(el, 'Copied! Paste in Terminal');
 }
 function copyCode(el) {
   var cmd = el.getAttribute('data-cmd');
-  navigator.clipboard.writeText(cmd).then(function() {
-    el.classList.add('done');
-    el.querySelector('.code-tag').textContent = 'Copied';
-    setTimeout(function() { el.classList.remove('done'); el.querySelector('.code-tag').textContent = 'Copy'; }, 1500);
-  });
+  copyToClipboard(cmd);
+  flashCode(el);
 }
 function runWindows() {
   var cmd = 'powershell -Command "Set-ItemProperty -Path \'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\' -Name ProxyEnable -Value 1; Set-ItemProperty -Path \'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\' -Name ProxyServer -Value \'{{PROXY_ADDR}}\'"';
-  copyValue(cmd, document.querySelector('#p-win .btn-action'));
+  copyToClipboard(cmd);
+  var btn = document.querySelector('#p-win .btn-action');
+  flashButton(btn, 'Copied! Paste in PowerShell');
 }
 function runMac() {
   var cmd = 'networksetup -setwebproxy Wi-Fi {{PROXY_HOST}} {{PROXY_PORT}} && networksetup -setsecurewebproxy Wi-Fi {{PROXY_HOST}} {{PROXY_PORT}} && networksetup -setsocksfirewallproxy Wi-Fi {{PROXY_HOST}} {{PROXY_PORT}} && networksetup -setwebproxystate Wi-Fi on && networksetup -setsecurewebproxystate Wi-Fi on && networksetup -setsocksfirewallproxystate Wi-Fi on';
-  copyValue(cmd, document.querySelector('#p-mac .btn-action'));
+  copyToClipboard(cmd);
+  var btn = document.querySelector('#p-mac .btn-action');
+  flashButton(btn, 'Copied! Paste in Terminal');
 }
 function runLinux() {
   var cmd = "gsettings set org.gnome.system.proxy mode 'manual' && gsettings set org.gnome.system.proxy.http host '{{PROXY_HOST}}' && gsettings set org.gnome.system.proxy.http port {{PROXY_PORT}} && gsettings set org.gnome.system.proxy.https host '{{PROXY_HOST}}' && gsettings set org.gnome.system.proxy.https port {{PROXY_PORT}} && gsettings set org.gnome.system.proxy.socks host '{{PROXY_HOST}}' && gsettings set org.gnome.system.proxy.socks port {{PROXY_PORT}}";
-  copyValue(cmd, document.querySelector('#p-lin .btn-action'));
+  copyToClipboard(cmd);
+  var btn = document.querySelector('#p-lin .btn-action');
+  flashButton(btn, 'Copied! Paste in Terminal');
 }
 </script>
 </body>
@@ -1170,8 +1226,8 @@ private class Socks5InlineHandler(
             }
             upstream.start()
             downstream.start()
-            upstream.join(TUNNEL_JOIN_TIMEOUT_MS)
-            downstream.join(TUNNEL_JOIN_TIMEOUT_MS)
+            upstream.join()
+            downstream.join()
         } catch (_: Exception) {
             sendReply(output, REP_HOST_UNREACHABLE)
         } finally {
