@@ -71,12 +71,49 @@ class MainActivity : AppCompatActivity() {
         ShareController.observe(stateListener)
         TunnelController.observe(tunnelListener)
 
+        // Auto-discover sharing phone when on the Wi-Fi Direct network
+        autoDiscoverShareHost()
+
         // Test hook for the adb scripts (scripts/device-test.sh): launching
         // with this action starts sharing without any UI taps, which is the
         // only automation that is reliable on real devices.
         if (intent?.action == ACTION_AUTO_START) {
             startSharingIfPossible()
         }
+    }
+
+    /**
+     * Try to discover the sharing phone by hitting the discovery JSON endpoint.
+     * If found, auto-fill the host IP in the client input field.
+     */
+    private fun autoDiscoverShareHost() {
+        Thread {
+            try {
+                val url = java.net.URL("http://192.168.49.1:8080/sharenet.json")
+                val conn = url.openConnection() as java.net.HttpURLConnection
+                conn.connectTimeout = 2000
+                conn.readTimeout = 2000
+                if (conn.responseCode == 200) {
+                    val body = conn.inputStream.bufferedReader().readText()
+                    // Parse simple JSON: {"host":"...","port":...}
+                    // Simple JSON parse: find "host":"value"
+                    val hostStart = body.indexOf("\"host\":\"")
+                    if (hostStart >= 0) {
+                        val valueStart = hostStart + 9 // length of "host":"
+                        val valueEnd = body.indexOf("\"", valueStart)
+                        if (valueEnd > valueStart) {
+                            val discoveredHost = body.substring(valueStart, valueEnd)
+                            runOnUiThread {
+                                binding.clientHostInput.setText(discoveredHost)
+                                Toast.makeText(this@MainActivity, "ShareNet found: $discoveredHost", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                // Not on the ShareNet network or host not available
+            }
+        }.start()
     }
 
     override fun onNewIntent(intent: Intent) {

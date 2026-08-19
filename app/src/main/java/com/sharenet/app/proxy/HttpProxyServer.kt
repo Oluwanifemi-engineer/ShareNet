@@ -248,6 +248,12 @@ class HttpProxyServer(
             lowerPath == "/setup" || lowerPath.endsWith("/setup?") -> {
                 serveSetupPage(output, proxyAddr)
             }
+            lowerPath == "/download" || lowerPath.endsWith("/download?") -> {
+                serveApkDownload(output)
+            }
+            lowerPath == "/sharenet.json" || lowerPath.endsWith("/sharenet.json?") -> {
+                serveDiscoveryJson(output, host, portNum)
+            }
             else -> {
                 val setupUrl = "http://$bindHost:$portNum/setup"
                 runCatching {
@@ -297,6 +303,58 @@ class HttpProxyServer(
             output.flush()
         }
     }
+
+    /**
+     * Serve the installed APK for download by client phones.
+     * The client can download this directly from the setup page.
+     */
+    private fun serveApkDownload(output: OutputStream) {
+        try {
+            val context = apkContext ?: run {
+                output.write("HTTP/1.1 404 Not Found\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
+                return
+            }
+            val apkFile = java.io.File(context.applicationInfo.sourceDir)
+            if (!apkFile.exists()) {
+                output.write("HTTP/1.1 404 Not Found\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
+                return
+            }
+            val fileSize = apkFile.length()
+            output.write("HTTP/1.1 200 OK\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Content-Type: application/vnd.android.package-archive\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Content-Length: $fileSize\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Content-Disposition: attachment; filename=ShareNet.apk\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Connection: close\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.flush()
+            apkFile.inputStream().use { input ->
+                input.copyTo(output, bufferSize = 65536)
+                output.flush()
+            }
+        } catch (e: Exception) {
+            log("apk download failed: ${e.message}")
+        }
+    }
+
+    /**
+     * Discovery JSON endpoint for client auto-connect.
+     * Client phones hit this to discover the sharing phone's details.
+     */
+    private fun serveDiscoveryJson(output: OutputStream, host: String, port: Int) {
+        val json = """{"host":"$host","port":$port,"name":"ShareNet","version":"1.0"}"""
+        val body = json.toByteArray(Charsets.UTF_8)
+        runCatching {
+            output.write("HTTP/1.1 200 OK\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Content-Type: application/json\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Access-Control-Allow-Origin: *\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Content-Length: ${body.size}\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Connection: close\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write(body)
+            output.flush()
+        }
+    }
+
+    /** Set the Android context for serving the APK file. */
+    var apkContext: android.content.Context? = null
 
     // ── Request parsing ─────────────────────────────────────────────────────
 
@@ -1108,14 +1166,16 @@ body {
     <div style="font-size: 13px; color: var(--text-2); line-height: 1.6;">
       The proxy settings above work for browsers and some apps. For <strong>WhatsApp, Telegram, Instagram, games</strong> and all other apps, install the <strong>ShareNet app</strong> on your client phone.
     </div>
+    <a href="/download" style="display: block; margin-top: 12px; padding: 14px; background: linear-gradient(135deg, #10b981 0%, #059669 100%); border-radius: 8px; text-align: center; text-decoration: none; color: #fff; font-weight: 700; font-size: 14px;">Download ShareNet App</a>
     <div style="margin-top: 12px; background: var(--surface-2); border-radius: 8px; padding: 14px;">
       <div style="font-size: 12px; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px;">Client Phone Setup</div>
       <div style="font-size: 13px; color: var(--text-2); line-height: 1.6;">
-        1. Install <strong>ShareNet</strong> on the client phone<br>
-        2. Connect to the same WiFi network shown above<br>
-        3. Open ShareNet &rarr; enter host: <strong>{{PROXY_HOST}}</strong><br>
-        4. Enter the 4-digit PIN shown on the sharing phone<br>
-        5. Tap <strong>Connect</strong> &mdash; all apps now work
+        1. Tap <strong>Download</strong> above to get the app<br>
+        2. Install the APK (allow unknown sources)<br>
+        3. Connect to the same WiFi network shown above<br>
+        4. Open ShareNet &rarr; host auto-fills to <strong>{{PROXY_HOST}}</strong><br>
+        5. Enter the 4-digit PIN shown on the sharing phone<br>
+        6. Tap <strong>Connect</strong> &mdash; all apps now work
       </div>
     </div>
   </div>

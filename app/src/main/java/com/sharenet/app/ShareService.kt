@@ -273,6 +273,7 @@ class ShareService : Service() {
             hotspotMode = true,
         ) { msg -> log("proxy: $msg") }
         try {
+            candidate.apkContext = this
             candidate.start()
             proxy = candidate
             ShareController.dispatch(ShareEvent.ProxyStarted(host, candidate.boundPort))
@@ -291,6 +292,7 @@ class ShareService : Service() {
                         captivePortalEnabled = true,
                         hotspotMode = true,
                     ) { msg -> log("proxy: $msg") }
+                    fallback.apkContext = this
                     fallback.start()
                     proxy = fallback
                     ShareController.dispatch(ShareEvent.ProxyStarted("0.0.0.0", fallback.boundPort))
@@ -444,6 +446,7 @@ class ShareService : Service() {
             captivePortalEnabled = true,
         ) { msg -> log("proxy: $msg") }
         try {
+            candidate.apkContext = this
             candidate.start()
             proxy = candidate
             ShareController.dispatch(ShareEvent.ProxyStarted(host, candidate.boundPort))
@@ -466,6 +469,7 @@ class ShareService : Service() {
             log("proxy: $msg")
         }
         try {
+            candidate.apkContext = this
             candidate.start()
             proxy = candidate
             ShareController.dispatch(ShareEvent.ProxyStarted(host, candidate.boundPort))
