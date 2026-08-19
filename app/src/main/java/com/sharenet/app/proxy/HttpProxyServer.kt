@@ -496,9 +496,19 @@ class HttpProxyServer(
         }
         val origin = Socket()
         try {
-            origin.connect(InetSocketAddress(req.host, req.port), CONNECT_TIMEOUT_MS)
+            // Use DNS cache for faster lookups
+            val cachedAddr = dnsCache[req.host] ?: runCatching {
+                java.net.InetAddress.getByName(req.host)
+            }.getOrNull()?.also { dnsCache[req.host] = it }
+            val addr = cachedAddr ?: java.net.InetAddress.getByName(req.host)
+            origin.connect(java.net.InetSocketAddress(addr, req.port), CONNECT_TIMEOUT_MS)
             origin.soTimeout = IDLE_TIMEOUT_MS
             origin.tcpNoDelay = true
+            // Larger socket buffers for WiFi throughput
+            runCatching {
+                origin.sendBufferSize = SOCKET_BUFFER_SIZE
+                origin.receiveBufferSize = SOCKET_BUFFER_SIZE
+            }
             output.write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
             output.flush()
 
@@ -540,8 +550,6 @@ class HttpProxyServer(
         } catch (_: Exception) {
         } finally {
             done.set(true)
-            // Do NOT close 'to' — the other thread may still be reading from it.
-            // The caller (handleConnect) closes the origin socket after both threads finish.
         }
     }
 
@@ -648,6 +656,10 @@ class HttpProxyServer(
         private const val TUNNEL_JOIN_TIMEOUT_MS = 130_000L
         private const val MAX_LINE_SIZE = 16 * 1024
         private const val MAX_HEAD_SIZE = 64 * 1024
+        private const val SOCKET_BUFFER_SIZE = 256 * 1024  // 256 KB — optimised for WiFi
+
+        /** Simple DNS cache to avoid repeated lookups for the same host. */
+        private val dnsCache = java.util.concurrent.ConcurrentHashMap<String, java.net.InetAddress>()
 
         private val CRLF = byteArrayOf(0x0D, 0x0A)
 
