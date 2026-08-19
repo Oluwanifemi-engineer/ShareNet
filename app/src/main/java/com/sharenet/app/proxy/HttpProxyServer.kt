@@ -1035,7 +1035,7 @@ body {
     <!-- Windows -->
     <div class="panel active" id="p-win">
       <div class="panel-title">Windows Setup</div>
-      <div class="panel-desc">Configure your system proxy with one command.</div>
+      <div class="panel-desc">One command sets proxy for browsers, email, and most desktop apps.</div>
       <button class="btn-action" onclick="runWindows()">
         <svg viewBox="0 0 16 16" fill="currentColor"><path d="M0 2.4l7-1v7H0V2.4zm7.8-.9L16 0v8.5H7.8V1.5zM0 9.5h7v7l-7-1V9.5zm7.8 0H16V16l-8.2-1.1V9.5z"/></svg>
         Configure Proxy
@@ -1054,7 +1054,7 @@ body {
         <span class="code-tag">Copy</span>
         powershell -Command "Set-ItemProperty ... -Name ProxyServer -Value '{{PROXY_ADDR}}'"
       </div>
-      <p class="panel-desc" style="margin-top:12px">This sets the system-wide proxy for browsers, email, and most applications.</p>
+      <p class="panel-desc" style="margin-top:12px">Works for: Chrome, Edge, Firefox, Outlook, Teams, Slack, and most desktop apps. Some apps (Discord, Steam) may need manual proxy settings in their own preferences.</p>
       <div class="undo-section">
         <div class="undo-title">Disable</div>
         <div class="code-block" onclick="copyCode(this)" data-cmd="powershell -Command &quot;Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyEnable -Value 0&quot;">
@@ -1118,7 +1118,7 @@ body {
         <span class="code-tag">Copy</span>
         gsettings set org.gnome.system.proxy mode 'manual' &amp;&amp; ...
       </div>
-      <p class="panel-desc" style="margin-top:12px">Works on GNOME desktops (Ubuntu, Fedora). Also add the <strong style="font-family:var(--mono)">export</strong> lines to your shell profile for terminal apps.</p>
+      <p class="panel-desc" style="margin-top:12px">Works for GNOME apps and browsers. For terminal apps, also run: <strong style="font-family:var(--mono)">export http_proxy=http://{{PROXY_ADDR}} https_proxy=http://{{PROXY_ADDR}}</strong></p>
       <div class="undo-section">
         <div class="undo-title">Disable</div>
         <div class="code-block" onclick="copyCode(this)" data-cmd="gsettings set org.gnome.system.proxy mode 'none'">

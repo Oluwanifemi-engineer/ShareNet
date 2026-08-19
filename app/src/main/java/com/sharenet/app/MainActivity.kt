@@ -84,7 +84,9 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * Try to discover the sharing phone by hitting the discovery JSON endpoint.
-     * If found, auto-fill the host IP in the client input field.
+     * If found, auto-fill the host IP and optionally auto-connect.
+     * Security: only auto-connects if the user has a saved PIN from a previous
+     * session — never auto-connects without explicit prior consent.
      */
     private fun autoDiscoverShareHost() {
         Thread {
@@ -95,17 +97,31 @@ class MainActivity : AppCompatActivity() {
                 conn.readTimeout = 2000
                 if (conn.responseCode == 200) {
                     val body = conn.inputStream.bufferedReader().readText()
-                    // Parse simple JSON: {"host":"...","port":...}
-                    // Simple JSON parse: find "host":"value"
                     val hostStart = body.indexOf("\"host\":\"")
                     if (hostStart >= 0) {
-                        val valueStart = hostStart + 9 // length of "host":"
+                        val valueStart = hostStart + 9
                         val valueEnd = body.indexOf("\"", valueStart)
                         if (valueEnd > valueStart) {
                             val discoveredHost = body.substring(valueStart, valueEnd)
+                            val savedPin = TunnelVpnService.prefs(this@MainActivity)
+                                .getString(TunnelVpnService.KEY_PIN, null)
                             runOnUiThread {
                                 binding.clientHostInput.setText(discoveredHost)
-                                Toast.makeText(this@MainActivity, "ShareNet found: $discoveredHost", Toast.LENGTH_SHORT).show()
+                                if (!savedPin.isNullOrEmpty() && TunnelController.state is TunnelController.TunnelState.Idle) {
+                                    // User has previously connected with a PIN — offer auto-connect
+                                    binding.clientPinInput.setText(savedPin)
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        "ShareNet found! Tap Connect to join.",
+                                        Toast.LENGTH_SHORT,
+                                    ).show()
+                                } else {
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        "ShareNet found: $discoveredHost",
+                                        Toast.LENGTH_SHORT,
+                                    ).show()
+                                }
                             }
                         }
                     }
