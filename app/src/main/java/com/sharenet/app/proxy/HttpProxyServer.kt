@@ -47,6 +47,7 @@ class HttpProxyServer(
 
     private val running = AtomicBoolean(false)
     private var acceptSocket: ServerSocket? = null
+    private var captivePortalSocket: ServerSocket? = null
     private val clientSockets: MutableSet<Socket> = Collections.synchronizedSet(mutableSetOf())
 
     private val executor = ThreadPoolExecutor(
@@ -76,6 +77,23 @@ class HttpProxyServer(
             Thread { acceptLoop(ss) }
                 .apply { name = "sharenet-proxy-accept"; isDaemon = true }
                 .start()
+
+            // Captive portal listener on port 80 — OSes probe this port to
+            // detect captive portals. We redirect to the setup page on port 8080.
+            if (captivePortalEnabled) {
+                try {
+                    val cps = ServerSocket()
+                    cps.reuseAddress = true
+                    cps.bind(InetSocketAddress(bindHost, 80))
+                    captivePortalSocket = cps
+                    log("captive portal listening on $bindHost:80")
+                    Thread { captivePortalLoop(cps) }
+                        .apply { name = "sharenet-captive-accept"; isDaemon = true }
+                        .start()
+                } catch (e: IOException) {
+                    log("captive portal port 80 bind failed (non-fatal): ${e.message}")
+                }
+            }
         } catch (e: IOException) {
             running.set(false)
             throw ProxyBindException("bind failed on $bindHost:$port", e)
@@ -90,6 +108,10 @@ class HttpProxyServer(
         } catch (_: IOException) {
         }
         acceptSocket = null
+        try {
+            captivePortalSocket?.close()
+        } catch (_: IOException) {}
+        captivePortalSocket = null
         synchronized(clientSockets) {
             clientSockets.toList().forEach { runCatching { it.close() } }
             clientSockets.clear()
@@ -118,6 +140,44 @@ class HttpProxyServer(
                 }
             } catch (e: IOException) {
                 if (running.get()) log("accept failed: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Captive portal loop on port 80. OSes probe known URLs on port 80 to
+     * detect captive portals. We redirect every request to the setup page
+     * on port 8080.
+     */
+    private fun captivePortalLoop(ss: ServerSocket) {
+        val setupUrl = "http://$bindHost:$boundPort/setup"
+        val redirect = (
+            "HTTP/1.1 302 Found\r\n" +
+            "Location: $setupUrl\r\n" +
+            "Content-Length: 0\r\n" +
+            "Connection: close\r\n\r\n"
+            ).toByteArray(Charsets.ISO_8859_1)
+        while (running.get()) {
+            try {
+                val socket = ss.accept()
+                if (!running.get()) { runCatching { socket.close() }; break }
+                Thread {
+                    try {
+                        socket.soTimeout = 5000
+                        val inp = socket.getInputStream()
+                        // Read the request line to drain the socket
+                        val buf = ByteArray(2048)
+                        inp.read(buf)
+                        // Send redirect to setup page
+                        socket.getOutputStream().write(redirect)
+                        socket.getOutputStream().flush()
+                    } catch (_: Exception) {
+                    } finally {
+                        runCatching { socket.close() }
+                    }
+                }.apply { isDaemon = true; start() }
+            } catch (e: IOException) {
+                if (running.get()) log("captive portal accept failed: ${e.message}")
             }
         }
     }

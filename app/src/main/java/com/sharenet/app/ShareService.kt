@@ -16,7 +16,7 @@ import java.security.SecureRandom
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
-import com.sharenet.app.proxy.DnsForwarder
+import com.sharenet.app.proxy.CaptivePortalDnsServer
 import com.sharenet.app.proxy.HttpProxyServer
 import com.sharenet.app.proxy.IcmpRelayServer
 import com.sharenet.app.proxy.OsPingSocket
@@ -53,7 +53,7 @@ class ShareService : Service() {
     private var proxy: HttpProxyServer? = null
     private var relay: UdpRelayServer? = null
     private var icmpRelay: IcmpRelayServer? = null
-    private var dns: DnsForwarder? = null
+    private var dns: CaptivePortalDnsServer? = null
     private var tcpRelay: TcpTunnelServer? = null
     private var sessionActive = false
     private var lastUpstream: String? = null
@@ -337,14 +337,15 @@ class ShareService : Service() {
      */
     private fun startDns(host: String) {
         try {
-            val candidate = DnsForwarder.forHosts(host, DNS_PORT, NetworkInfo.dnsServers(this)) { msg ->
+            val answerIp = java.net.InetAddress.getByName(host)
+            val candidate = CaptivePortalDnsServer(host, DNS_PORT, answerIp) { msg ->
                 log("dns: $msg")
             }
             candidate.start()
             dns = candidate
-            log("dns forwarder up on $host:$DNS_PORT")
+            log("captive dns up on $host:$DNS_PORT -> ${answerIp.hostAddress}")
         } catch (e: ProxyBindException) {
-            log("dns forwarder failed to bind (non-fatal): ${e.message}")
+            log("captive dns failed to bind (non-fatal): ${e.message}")
         }
     }
 
