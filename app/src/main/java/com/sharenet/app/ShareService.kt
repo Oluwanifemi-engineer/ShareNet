@@ -147,20 +147,12 @@ class ShareService : Service() {
         ShareController.dispatch(ShareEvent.CapabilityDetected(capabilities.capability))
 
         // ════════════════════════════════════════════════════════════════════
-        // STRATEGY: Native Hotspot is the PRIMARY method.
+        // STRATEGY:
         //
-        // Why: Native hotspot provides automatic NAT. Connected devices
-        // get internet like a normal WiFi network. ALL apps work (WhatsApp,
-        // games, etc.) — no proxy configuration needed.
-        //
-        // Wi-Fi Direct is FALLBACK only — it requires manual proxy config,
-        // and only browsers respect proxy settings on Android/Windows.
-        //
-        // Flow:
-        //   1. First, check if user already enabled hotspot → use it
-        //   2. If not, try programmatic start
-        //   3. If that fails, open hotspot settings and wait
-        //   4. Only fall back to Wi-Fi Direct if hotspot is truly unavailable
+        // 1. If hotspot is ALREADY active → use it (NAT, all apps work)
+        // 2. If hotspot can start programmatically → use it
+        // 3. Otherwise → Wi-Fi Direct P2P (client needs ShareNet app for
+        //    WhatsApp etc. — proxy-only for browsers)
         // ════════════════════════════════════════════════════════════════════
 
         // Step 1: Check if hotspot is already active
@@ -179,23 +171,21 @@ class ShareService : Service() {
             hotspot.start(object : NativeHotspotManager.Listener {
                 override fun onHotspotStarted(ssid: String, password: String) {
                     log("native hotspot started: $ssid")
-                    // Give the interface a moment to come up
                     handler.postDelayed({
                         val ip = findActiveHotspotInterface()
                         if (ip != null) {
                             startOnHotspot(ip)
                         } else {
-                            // Hotspot started but we can't find the interface yet
-                            // Use 0.0.0.0 as bind address
                             startOnHotspot("0.0.0.0")
                         }
                     }, 1500)
                 }
 
                 override fun onHotspotFailed(reason: String) {
-                    log("native hotspot programmatic start failed: $reason")
-                    // Step 3: Open hotspot settings for the user to enable manually
-                    openHotspotSettingsAndWait()
+                    log("hotspot failed ($reason) — falling back to Wi-Fi Direct")
+                    // Device can't do WiFi+Hotspot simultaneously (e.g. Samsung A03s)
+                    // Fall back to Wi-Fi Direct P2P immediately
+                    startWifiDirect()
                 }
 
                 override fun onHotspotStopped() {
@@ -203,8 +193,8 @@ class ShareService : Service() {
                 }
             })
         } else {
-            log("native hotspot not available, opening settings")
-            openHotspotSettingsAndWait()
+            log("native hotspot not available, using Wi-Fi Direct")
+            startWifiDirect()
         }
     }
 

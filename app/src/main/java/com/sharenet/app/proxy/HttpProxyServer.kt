@@ -1073,7 +1073,7 @@ body {
     <!-- Android -->
     <div class="panel" id="p-and">
       <div class="panel-title">Android Setup</div>
-      <div class="panel-desc">Configure your Wi-Fi proxy manually.</div>
+      <div class="panel-desc"><strong>Best option:</strong> Install the ShareNet app for all-app support. Or configure proxy manually for browser-only.</div>
       <div class="steps">
         <div class="step">
           <div class="step-num">1</div>
@@ -1103,8 +1103,26 @@ body {
     </div>
   </div>
 
+  <div style="background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-top: 24px;">
+    <div style="font-size: 15px; font-weight: 700; color: var(--text); margin-bottom: 8px;">WhatsApp, Instagram, Games &amp; Other Apps</div>
+    <div style="font-size: 13px; color: var(--text-2); line-height: 1.6;">
+      The proxy settings above work for browsers and some apps. For <strong>WhatsApp, Telegram, Instagram, games</strong> and all other apps, install the <strong>ShareNet app</strong> on your client phone.
+    </div>
+    <div style="margin-top: 12px; background: var(--surface-2); border-radius: 8px; padding: 14px;">
+      <div style="font-size: 12px; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px;">Client Phone Setup</div>
+      <div style="font-size: 13px; color: var(--text-2); line-height: 1.6;">
+        1. Install <strong>ShareNet</strong> on the client phone<br>
+        2. Connect to the same WiFi network shown above<br>
+        3. Open ShareNet &rarr; enter host: <strong>{{PROXY_HOST}}</strong><br>
+        4. Enter the 4-digit PIN shown on the sharing phone<br>
+        5. Tap <strong>Connect</strong> &mdash; all apps now work
+      </div>
+    </div>
+  </div>
+
   <div class="footer">
     <p>To disable: run the undo command or set proxy mode to Off / Automatic</p>
+    <p style="margin-top: 8px;">ShareNet &mdash; Share your internet, share your world</p>
   </div>
 
   </div> <!-- end proxySection -->
