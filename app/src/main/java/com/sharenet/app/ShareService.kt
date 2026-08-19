@@ -18,7 +18,6 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.sharenet.app.proxy.DnsForwarder
 import com.sharenet.app.proxy.HttpProxyServer
-import com.sharenet.app.proxy.Socks5ProxyServer
 import com.sharenet.app.proxy.IcmpRelayServer
 import com.sharenet.app.proxy.OsPingSocket
 import com.sharenet.app.proxy.P2pAddressResolver
@@ -52,7 +51,6 @@ class ShareService : Service() {
     private val stats = ProxyStats()
     private var wifiDirect: WifiDirectManager? = null
     private var proxy: HttpProxyServer? = null
-    private var socks5: Socks5ProxyServer? = null
     private var relay: UdpRelayServer? = null
     private var icmpRelay: IcmpRelayServer? = null
     private var dns: DnsForwarder? = null
@@ -260,7 +258,6 @@ class ShareService : Service() {
             candidate.start()
             proxy = candidate
             ShareController.dispatch(ShareEvent.ProxyStarted(host, candidate.boundPort))
-            startSocks5(host)
             startTicker()
             refreshNotification()
         } catch (e: ProxyBindException) {
@@ -283,7 +280,6 @@ class ShareService : Service() {
             candidate.start()
             proxy = candidate
             ShareController.dispatch(ShareEvent.ProxyStarted(host, candidate.boundPort))
-            startSocks5(host)
             startRelayWithRetry(attemptsLeft = RELAY_BIND_RETRIES, host = host)
             startTicker()
             refreshNotification()
@@ -295,22 +291,6 @@ class ShareService : Service() {
                     startProxyWithRetry(attemptsLeft - 1)
                 }
             }
-        }
-    }
-
-    /** SOCKS5 proxy for all TCP/UDP traffic (chat apps, games, etc). */
-    private fun startSocks5(host: String) {
-        try {
-            val candidate = Socks5ProxyServer(
-                bindHost = host,
-                port = SOCKS5_PORT,
-                stats = stats,
-            ) { msg -> log("socks5: $msg") }
-            candidate.start()
-            socks5 = candidate
-            log("socks5 proxy up on $host:${candidate.boundPort}")
-        } catch (e: ProxyBindException) {
-            log("socks5 proxy failed to bind (non-fatal): ${e.message}")
         }
     }
 
@@ -483,8 +463,6 @@ class ShareService : Service() {
         pendingRetries.clear()
         proxy?.stop()
         proxy = null
-        socks5?.stop()
-        socks5 = null
         relay?.stop()
         relay = null
         icmpRelay?.stop()
@@ -584,7 +562,6 @@ class ShareService : Service() {
         private const val CHANNEL_ID = "sharenet_status"
         private const val NOTIFICATION_ID = 1
         private const val PROXY_PORT = 8080
-        private const val SOCKS5_PORT = 1080
         private const val UDP_RELAY_PORT = 5555
         private const val DNS_PORT = 53
         private const val TICK_MS = 3_000L

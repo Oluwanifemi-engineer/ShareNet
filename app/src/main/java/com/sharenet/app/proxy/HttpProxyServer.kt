@@ -5,17 +5,18 @@ import java.io.BufferedOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URI
 import java.util.Collections
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.SynchronousQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
 
 /**
  * A small, dependency-free HTTP proxy server — the heart of ShareNet.
@@ -121,13 +122,29 @@ class HttpProxyServer(
         }
     }
 
+    /** SOCKS5 handler, inlined from Socks5ProxyServer for unified port. */
+    private val socks5Handler = Socks5InlineHandler(stats, destinationPolicy) { log("socks5: $it") }
+
     private fun handleClient(socket: Socket) {
         try {
             socket.soTimeout = IDLE_TIMEOUT_MS
             socket.tcpNoDelay = true
             val input = BufferedInputStream(socket.getInputStream(), BUFFER)
             val output = BufferedOutputStream(socket.getOutputStream(), BUFFER)
-            serve(input, output)
+
+            // Protocol auto-detection: peek first byte
+            // SOCKS5 starts with 0x05; HTTP starts with ASCII letters (G/C/P/O/H etc.)
+            val firstByte = input.read()
+            if (firstByte < 0) return
+            if (firstByte == 0x05) {
+                // SOCKS5 protocol — route to inline handler
+                stats.activeConnections.decrementAndGet() // SOCKS5 handler tracks its own
+                socks5Handler.handleClient(socket, firstByte, input, output)
+                return
+            }
+            // HTTP protocol — reconstruct by wrapping first byte back
+            val wrappedInput = FirstByteInputStream(firstByte, input)
+            serve(wrappedInput, output)
         } catch (_: Exception) {
         } finally {
             runCatching { socket.close() }
@@ -223,7 +240,6 @@ class HttpProxyServer(
             .replace("{{PAC_URL}}", pacUrl)
             .replace("{{PROXY_HOST}}", proxyAddr.substringBefore(':'))
             .replace("{{PROXY_PORT}}", proxyAddr.substringAfter(':'))
-            .replace("{{SOCKS_PORT}}", SOCKS5_DEFAULT_PORT.toString())
         val body = html.toByteArray(Charsets.UTF_8)
         runCatching {
             output.write("HTTP/1.1 200 OK\r\n".toByteArray(Charsets.ISO_8859_1))
@@ -599,7 +615,6 @@ class HttpProxyServer(
         private const val TUNNEL_JOIN_TIMEOUT_MS = 130_000L
         private const val MAX_LINE_SIZE = 16 * 1024
         private const val MAX_HEAD_SIZE = 64 * 1024
-        private const val SOCKS5_DEFAULT_PORT = 1080
 
         private val CRLF = byteArrayOf(0x0D, 0x0A)
 
@@ -826,9 +841,7 @@ body {
     <div class="status-badge"><div class="status-dot"></div> Internet Connected</div>
     <h1>You're Connected</h1>
     <p>Follow the steps below to start browsing through this device's connection.</p>
-  </div>
-
-  <div class="info-card">
+  </div>    <div class="info-card">
     <div class="info-row">
       <span class="info-label">Proxy</span>
       <span class="info-value">
@@ -838,10 +851,6 @@ body {
           Copy
         </button>
       </span>
-    </div>
-    <div class="info-row">
-      <span class="info-label">Port</span>
-      <span class="info-value">{{PROXY_PORT}}</span>
     </div>
   </div>
 
@@ -879,9 +888,9 @@ body {
           <div class="step-text">Paste the command and press Enter:</div>
         </div>
       </div>
-      <div class="code-block" onclick="copyCode(this)" data-cmd="powershell -Command &quot;Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyEnable -Value 1; Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyServer -Value 'http={{PROXY_ADDR}};socks={{PROXY_HOST}}:{{SOCKS_PORT}}'&quot;">
+      <div class="code-block" onclick="copyCode(this)" data-cmd="powershell -Command &quot;Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyEnable -Value 1; Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyServer -Value '{{PROXY_ADDR}}'&quot;">
         <span class="code-tag">Copy</span>
-        powershell -Command "Set-ItemProperty ... -Name ProxyServer -Value 'http={{PROXY_ADDR}};socks=...'"
+        powershell -Command "Set-ItemProperty ... -Name ProxyServer -Value '{{PROXY_ADDR}}'"
       </div>
       <p class="panel-desc" style="margin-top:12px">This sets the system-wide proxy for browsers, email, and most applications.</p>
       <div class="undo-section">
@@ -911,7 +920,7 @@ body {
           <div class="step-text">Paste the command and press Enter:</div>
         </div>
       </div>
-      <div class="code-block" onclick="copyCode(this)" data-cmd="networksetup -setwebproxy Wi-Fi {{PROXY_HOST}} {{PROXY_PORT}} &amp;&amp; networksetup -setsecurewebproxy Wi-Fi {{PROXY_HOST}} {{PROXY_PORT}} &amp;&amp; networksetup -setsocksfirewallproxy Wi-Fi {{PROXY_HOST}} {{SOCKS_PORT}} &amp;&amp; networksetup -setwebproxystate Wi-Fi on &amp;&amp; networksetup -setsecurewebproxystate Wi-Fi on &amp;&amp; networksetup -setsocksfirewallproxystate Wi-Fi on">
+      <div class="code-block" onclick="copyCode(this)" data-cmd="networksetup -setwebproxy Wi-Fi {{PROXY_HOST}} {{PROXY_PORT}} &amp;&amp; networksetup -setsecurewebproxy Wi-Fi {{PROXY_HOST}} {{PROXY_PORT}} &amp;&amp; networksetup -setsocksfirewallproxy Wi-Fi {{PROXY_HOST}} {{PROXY_PORT}} &amp;&amp; networksetup -setwebproxystate Wi-Fi on &amp;&amp; networksetup -setsecurewebproxystate Wi-Fi on &amp;&amp; networksetup -setsocksfirewallproxystate Wi-Fi on">
         <span class="code-tag">Copy</span>
         networksetup -setwebproxy Wi-Fi {{PROXY_HOST}} {{PROXY_PORT}} &amp;&amp; ...
       </div>
@@ -943,7 +952,7 @@ body {
           <div class="step-text">Paste the command and press Enter:</div>
         </div>
       </div>
-      <div class="code-block" onclick="copyCode(this)" data-cmd="gsettings set org.gnome.system.proxy mode 'manual' &amp;&amp; gsettings set org.gnome.system.proxy.http host '{{PROXY_HOST}}' &amp;&amp; gsettings set org.gnome.system.proxy.http port {{PROXY_PORT}} &amp;&amp; gsettings set org.gnome.system.proxy.https host '{{PROXY_HOST}}' &amp;&amp; gsettings set org.gnome.system.proxy.https port {{PROXY_PORT}} &amp;&amp; gsettings set org.gnome.system.proxy.socks host '{{PROXY_HOST}}' &amp;&amp; gsettings set org.gnome.system.proxy.socks port {{SOCKS_PORT}} &amp;&amp; export http_proxy=http://{{PROXY_ADDR}} https_proxy=http://{{PROXY_ADDR}} ALL_PROXY=socks5://{{PROXY_HOST}}:{{SOCKS_PORT}}">
+      <div class="code-block" onclick="copyCode(this)" data-cmd="gsettings set org.gnome.system.proxy mode 'manual' &amp;&amp; gsettings set org.gnome.system.proxy.http host '{{PROXY_HOST}}' &amp;&amp; gsettings set org.gnome.system.proxy.http port {{PROXY_PORT}} &amp;&amp; gsettings set org.gnome.system.proxy.https host '{{PROXY_HOST}}' &amp;&amp; gsettings set org.gnome.system.proxy.https port {{PROXY_PORT}} &amp;&amp; gsettings set org.gnome.system.proxy.socks host '{{PROXY_HOST}}' &amp;&amp; gsettings set org.gnome.system.proxy.socks port {{PROXY_PORT}} &amp;&amp; export http_proxy=http://{{PROXY_ADDR}} https_proxy=http://{{PROXY_ADDR}} ALL_PROXY=socks5://{{PROXY_HOST}}:{{PROXY_PORT}}">
         <span class="code-tag">Copy</span>
         gsettings set org.gnome.system.proxy mode 'manual' &amp;&amp; ...
       </div>
@@ -1020,15 +1029,15 @@ function copyCode(el) {
   });
 }
 function runWindows() {
-  var cmd = 'powershell -Command "Set-ItemProperty -Path \'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\' -Name ProxyEnable -Value 1; Set-ItemProperty -Path \'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\' -Name ProxyServer -Value \'http={{PROXY_ADDR}};socks={{PROXY_HOST}}:{{SOCKS_PORT}}\'"';
+  var cmd = 'powershell -Command "Set-ItemProperty -Path \'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\' -Name ProxyEnable -Value 1; Set-ItemProperty -Path \'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\' -Name ProxyServer -Value \'{{PROXY_ADDR}}\'"';
   copyValue(cmd, document.querySelector('#p-win .btn-action'));
 }
 function runMac() {
-  var cmd = 'networksetup -setwebproxy Wi-Fi {{PROXY_HOST}} {{PROXY_PORT}} && networksetup -setsecurewebproxy Wi-Fi {{PROXY_HOST}} {{PROXY_PORT}} && networksetup -setsocksfirewallproxy Wi-Fi {{PROXY_HOST}} {{SOCKS_PORT}} && networksetup -setwebproxystate Wi-Fi on && networksetup -setsecurewebproxystate Wi-Fi on && networksetup -setsocksfirewallproxystate Wi-Fi on';
+  var cmd = 'networksetup -setwebproxy Wi-Fi {{PROXY_HOST}} {{PROXY_PORT}} && networksetup -setsecurewebproxy Wi-Fi {{PROXY_HOST}} {{PROXY_PORT}} && networksetup -setsocksfirewallproxy Wi-Fi {{PROXY_HOST}} {{PROXY_PORT}} && networksetup -setwebproxystate Wi-Fi on && networksetup -setsecurewebproxystate Wi-Fi on && networksetup -setsocksfirewallproxystate Wi-Fi on';
   copyValue(cmd, document.querySelector('#p-mac .btn-action'));
 }
 function runLinux() {
-  var cmd = "gsettings set org.gnome.system.proxy mode 'manual' && gsettings set org.gnome.system.proxy.http host '{{PROXY_HOST}}' && gsettings set org.gnome.system.proxy.http port {{PROXY_PORT}} && gsettings set org.gnome.system.proxy.https host '{{PROXY_HOST}}' && gsettings set org.gnome.system.proxy.https port {{PROXY_PORT}} && gsettings set org.gnome.system.proxy.socks host '{{PROXY_HOST}}' && gsettings set org.gnome.system.proxy.socks port {{SOCKS_PORT}}";
+  var cmd = "gsettings set org.gnome.system.proxy mode 'manual' && gsettings set org.gnome.system.proxy.http host '{{PROXY_HOST}}' && gsettings set org.gnome.system.proxy.http port {{PROXY_PORT}} && gsettings set org.gnome.system.proxy.https host '{{PROXY_HOST}}' && gsettings set org.gnome.system.proxy.https port {{PROXY_PORT}} && gsettings set org.gnome.system.proxy.socks host '{{PROXY_HOST}}' && gsettings set org.gnome.system.proxy.socks port {{PROXY_PORT}}";
   copyValue(cmd, document.querySelector('#p-lin .btn-action'));
 }
 </script>
@@ -1039,3 +1048,206 @@ function runLinux() {
 }
 
 class ProxyBindException(message: String, cause: Throwable) : Exception(message, cause)
+
+/**
+ * Wraps an InputStream that already had one byte read, re-inserting it.
+ * Used by the unified proxy to peek at the first byte for protocol detection.
+ */
+private class FirstByteInputStream(private val firstByte: Int, private val delegate: InputStream) : InputStream() {
+    private var consumed = false
+
+    override fun read(): Int {
+        if (!consumed) {
+            consumed = true
+            return firstByte
+        }
+        return delegate.read()
+    }
+
+    override fun read(b: ByteArray, off: Int, len: Int): Int {
+        if (!consumed) {
+            if (len <= 0) return 0
+            b[off] = firstByte.toByte()
+            consumed = true
+            if (len == 1) return 1
+            val n = delegate.read(b, off + 1, len - 1)
+            return if (n < 0) 1 else n + 1
+        }
+        return delegate.read(b, off, len)
+    }
+
+    override fun available(): Int {
+        val base = if (consumed) delegate.available() else 1
+        return base
+    }
+
+    override fun close() = delegate.close()
+}
+
+/**
+ * Inlined SOCKS5 handler for the unified proxy — handles SOCKS5 on the same port as HTTP.
+ * Peeks at the first byte (already read as 0x05) and processes the SOCKS5 handshake.
+ */
+private class Socks5InlineHandler(
+    private val stats: ProxyStats,
+    private val destinationPolicy: DestinationPolicy,
+    private val log: (String) -> Unit,
+) {
+    companion object {
+        private const val BUFFER = 64 * 1024
+        private const val IDLE_TIMEOUT_MS = 120_000
+        private const val CONNECT_TIMEOUT_MS = 10_000
+        private const val TUNNEL_JOIN_TIMEOUT_MS = 130_000L
+        private const val CMD_CONNECT = 0x01
+        private const val CMD_UDP_ASSOCIATE = 0x03
+        private const val REP_SUCCESS = 0x00
+        private const val REP_CONNECTION_NOT_ALLOWED = 0x02
+        private const val REP_HOST_UNREACHABLE = 0x04
+        private const val REP_COMMAND_NOT_SUPPORTED = 0x07
+        private const val REP_ADDRESS_TYPE_NOT_SUPPORTED = 0x08
+        private const val ATYP_IPV4 = 0x01
+        private const val ATYP_DOMAIN = 0x03
+        private const val ATYP_IPV6 = 0x04
+        private val CRLF = byteArrayOf(0x0D, 0x0A)
+    }
+
+    fun handleClient(socket: Socket, firstByte: Int, input: BufferedInputStream, output: BufferedOutputStream) {
+        try {
+            stats.activeConnections.incrementAndGet()
+            // First byte is already 0x05, so the version is known.
+            // Read the rest of the method negotiation: NMETHODS + METHODS
+            val nMethods = input.read()
+            if (nMethods < 0) return
+            repeat(nMethods) { input.read() }
+            // Reply: no auth required
+            output.write(byteArrayOf(0x05, 0x00))
+            output.flush()
+
+            // Read SOCKS5 request
+            val ver = input.read()
+            if (ver != 0x05) return
+            val cmd = input.read()
+            input.read() // reserved
+            val atyp = input.read()
+
+            when (cmd) {
+                CMD_CONNECT -> handleConnect(input, output, atyp)
+                CMD_UDP_ASSOCIATE -> {
+                    // For simplicity, we don't support UDP ASSOCIATE yet in unified mode
+                    sendReply(output, REP_COMMAND_NOT_SUPPORTED)
+                }
+                else -> sendReply(output, REP_COMMAND_NOT_SUPPORTED)
+            }
+        } catch (_: Exception) {
+            // EOF / timeout
+        } finally {
+            // Don't close socket here — the caller (HttpProxyServer) does it
+        }
+    }
+
+    private fun handleConnect(input: BufferedInputStream, output: BufferedOutputStream, atyp: Int) {
+        val (destHost, destPort) = readAddress(input, atyp) ?: run {
+            sendReply(output, REP_ADDRESS_TYPE_NOT_SUPPORTED)
+            return
+        }
+        if (!destinationPolicy.allow(destHost)) {
+            sendReply(output, REP_CONNECTION_NOT_ALLOWED)
+            return
+        }
+        val origin = Socket()
+        try {
+            origin.connect(InetSocketAddress(destHost, destPort), CONNECT_TIMEOUT_MS)
+            origin.soTimeout = IDLE_TIMEOUT_MS
+            origin.tcpNoDelay = true
+            sendReply(output, REP_SUCCESS, origin.localAddress)
+
+            val done = AtomicBoolean(false)
+            val upstream = Thread {
+                runCatching { pump(input, origin.getOutputStream(), stats.bytesFromClients, done) }
+            }
+            val downstream = Thread {
+                runCatching { pump(origin.getInputStream(), output, stats.bytesToClients, done) }
+            }
+            upstream.start()
+            downstream.start()
+            upstream.join(TUNNEL_JOIN_TIMEOUT_MS)
+            downstream.join(TUNNEL_JOIN_TIMEOUT_MS)
+        } catch (_: Exception) {
+            sendReply(output, REP_HOST_UNREACHABLE)
+        } finally {
+            runCatching { origin.close() }
+        }
+    }
+
+    private fun readAddress(input: BufferedInputStream, atyp: Int): Pair<String, Int>? {
+        return when (atyp) {
+            ATYP_IPV4 -> {
+                val addr = ByteArray(4)
+                if (input.read(addr) < 4) return null
+                val port = readPort(input)
+                "${addr[0].toInt() and 0xFF}.${addr[1].toInt() and 0xFF}.${addr[2].toInt() and 0xFF}.${addr[3].toInt() and 0xFF}" to port
+            }
+            ATYP_DOMAIN -> {
+                val len = input.read()
+                if (len < 0) return null
+                val domain = ByteArray(len)
+                if (input.read(domain) < len) return null
+                val port = readPort(input)
+                String(domain) to port
+            }
+            ATYP_IPV6 -> {
+                val addr = ByteArray(16)
+                if (input.read(addr) < 16) return null
+                val port = readPort(input)
+                val sb = StringBuilder("[")
+                for (i in 0..7) {
+                    if (i > 0) sb.append(':')
+                    sb.append("%04x".format(((addr[i * 2].toInt() and 0xFF) shl 8) or (addr[i * 2 + 1].toInt() and 0xFF)))
+                }
+                sb.append(']')
+                sb.toString() to port
+            }
+            else -> null
+        }
+    }
+
+    private fun readPort(input: BufferedInputStream): Int {
+        val hi = input.read()
+        val lo = input.read()
+        return ((hi and 0xFF) shl 8) or (lo and 0xFF)
+    }
+
+    private fun sendReply(output: BufferedOutputStream, rep: Int, bindAddr: InetAddress? = null, bindPort: Int = 0) {
+        val reply = ByteArray(10)
+        reply[0] = 0x05
+        reply[1] = rep.toByte()
+        reply[2] = 0x00
+        reply[3] = ATYP_IPV4.toByte()
+        if (bindAddr != null) {
+            val bytes = bindAddr.address
+            System.arraycopy(bytes, 0, reply, 4, 4)
+        }
+        reply[8] = ((bindPort shr 8) and 0xFF).toByte()
+        reply[9] = (bindPort and 0xFF).toByte()
+        output.write(reply)
+        output.flush()
+    }
+
+    private fun pump(from: InputStream, to: OutputStream, counter: AtomicLong, done: AtomicBoolean) {
+        val buf = ByteArray(BUFFER)
+        try {
+            while (!done.get()) {
+                val n = from.read(buf)
+                if (n < 0) break
+                if (n > 0) {
+                    to.write(buf, 0, n)
+                    to.flush()
+                    counter.addAndGet(n.toLong())
+                }
+            }
+        } catch (_: Exception) {
+        } finally {
+            done.set(true)
+        }
+    }
+}
