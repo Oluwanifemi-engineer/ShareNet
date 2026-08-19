@@ -78,22 +78,7 @@ class HttpProxyServer(
                 .apply { name = "sharenet-proxy-accept"; isDaemon = true }
                 .start()
 
-            // Captive portal listener on port 80 — OSes probe this port to
-            // detect captive portals. We redirect to the setup page on port 8080.
-            if (captivePortalEnabled) {
-                try {
-                    val cps = ServerSocket()
-                    cps.reuseAddress = true
-                    cps.bind(InetSocketAddress(bindHost, 80))
-                    captivePortalSocket = cps
-                    log("captive portal listening on $bindHost:80")
-                    Thread { captivePortalLoop(cps) }
-                        .apply { name = "sharenet-captive-accept"; isDaemon = true }
-                        .start()
-                } catch (e: IOException) {
-                    log("captive portal port 80 bind failed (non-fatal): ${e.message}")
-                }
-            }
+
         } catch (e: IOException) {
             running.set(false)
             throw ProxyBindException("bind failed on $bindHost:$port", e)

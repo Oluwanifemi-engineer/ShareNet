@@ -336,17 +336,23 @@ class ShareService : Service() {
      * own resolvers.
      */
     private fun startDns(host: String) {
-        try {
-            val answerIp = java.net.InetAddress.getByName(host)
-            val candidate = CaptivePortalDnsServer(host, DNS_PORT, answerIp) { msg ->
-                log("dns: $msg")
+        val answerIp = java.net.InetAddress.getByName(host)
+        // Try binding to 0.0.0.0 first (avoids conflict with Android's built-in
+        // DNS on specific IPs), fall back to the specific host address.
+        for (bindAddr in listOf("0.0.0.0", host)) {
+            try {
+                val candidate = CaptivePortalDnsServer(bindAddr, DNS_PORT, answerIp) { msg ->
+                    log("dns: $msg")
+                }
+                candidate.start()
+                dns = candidate
+                log("captive dns up on $bindAddr:$DNS_PORT -> ${answerIp.hostAddress}")
+                return
+            } catch (_: ProxyBindException) {
+                // try next address
             }
-            candidate.start()
-            dns = candidate
-            log("captive dns up on $host:$DNS_PORT -> ${answerIp.hostAddress}")
-        } catch (e: ProxyBindException) {
-            log("captive dns failed to bind (non-fatal): ${e.message}")
         }
+        log("captive dns failed to bind on any address (non-fatal)")
     }
 
     /**
@@ -505,11 +511,12 @@ class ShareService : Service() {
             state.info.clients,
             state.info.clients,
         )
+        val setupUrl = "http://${state.info.proxyHost}:${state.info.proxyPort}/setup"
         val text = getString(
             R.string.notif_text_sharing,
             clients,
             state.info.proxyAddress,
-        ) + relayLine + pinLine
+        ) + "\nOpen: $setupUrl" + relayLine + pinLine
         val notification = buildNotification(
             getString(R.string.notif_title_sharing, state.info.ssid),
             text,

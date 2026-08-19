@@ -302,11 +302,13 @@ class MainActivity : AppCompatActivity() {
     private fun updateQr(info: ShareInfo) {
         if (info.ssid == lastQrSsid && binding.qrCode.drawable != null) return
         lastQrSsid = info.ssid
+        val setupUrl = "http://${info.proxyHost}:${info.proxyPort}/setup"
         val payload = buildString {
             appendLine("ShareNet")
             appendLine("Network: ${info.ssid}")
             appendLine("Password: ${info.passphrase}")
             appendLine("Proxy: ${info.proxyAddress}")
+            appendLine("Setup: $setupUrl")
             info.udpRelayPort?.let { appendLine("Games/calls: ${info.proxyHost}:$it") }
             info.pin?.let { appendLine("PIN: $it") }
         }
