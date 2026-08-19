@@ -223,6 +223,7 @@ class HttpProxyServer(
             .replace("{{PAC_URL}}", pacUrl)
             .replace("{{PROXY_HOST}}", proxyAddr.substringBefore(':'))
             .replace("{{PROXY_PORT}}", proxyAddr.substringAfter(':'))
+            .replace("{{SOCKS_PORT}}", SOCKS5_DEFAULT_PORT.toString())
         val body = html.toByteArray(Charsets.UTF_8)
         runCatching {
             output.write("HTTP/1.1 200 OK\r\n".toByteArray(Charsets.ISO_8859_1))
@@ -598,6 +599,7 @@ class HttpProxyServer(
         private const val TUNNEL_JOIN_TIMEOUT_MS = 130_000L
         private const val MAX_LINE_SIZE = 16 * 1024
         private const val MAX_HEAD_SIZE = 64 * 1024
+        private const val SOCKS5_DEFAULT_PORT = 1080
 
         private val CRLF = byteArrayOf(0x0D, 0x0A)
 
@@ -619,173 +621,415 @@ class HttpProxyServer(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ShareNet</title>
+<meta name="color-scheme" content="dark">
+<title>ShareNet — Connect</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%2310b981'/><text y='68' x='50' text-anchor='middle' font-size='52' font-family='system-ui' font-weight='700' fill='white'>S</text></svg>">
 <style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
-background:#111;color:#f5f5f5;min-height:100vh}
-.wrap{max-width:520px;margin:0 auto;padding:56px 20px 40px}
-.logo{display:flex;align-items:center;gap:10px;margin-bottom:32px}
-.logo-mark{width:32px;height:32px;background:linear-gradient(135deg,#22c55e,#16a34a);
-border-radius:8px;display:flex;align-items:center;justify-content:center;
-font-size:16px;font-weight:700;color:#fff}
-.logo-text{font-size:15px;font-weight:600;letter-spacing:-0.01em}
-.hdr{margin-bottom:40px}
-.hdr h1{font-size:24px;font-weight:700;letter-spacing:-0.02em;margin-bottom:6px}
-.hdr p{font-size:14px;color:#888;line-height:1.5}
-.chip{display:inline-flex;align-items:center;gap:6px;margin-top:10px;
-font-size:12px;color:#22c55e;font-weight:500}
-.dot{width:6px;height:6px;background:#22c55e;border-radius:50%;
-animation:blink 2s infinite}
-@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
-.field{margin-bottom:24px}
-.field-label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;
-color:#555;font-weight:600;margin-bottom:6px}
-.field-addr{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:10px;
-padding:14px 16px;display:flex;align-items:center;justify-content:space-between}
-.field-addr span{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
-font-size:16px;font-weight:600;color:#22c55e;letter-spacing:0.5px}
-.copy-btn{background:#222;border:1px solid #333;border-radius:8px;
-padding:6px 12px;font-size:12px;color:#aaa;cursor:pointer;
-transition:all .15s;font-weight:500}
-.copy-btn:hover{background:#333;color:#fff;border-color:#444}
-.copy-btn:active{transform:scale(.97)}
-.copy-btn.copied{color:#22c55e;border-color:#22c55e}
-.os-tabs{display:flex;gap:0;margin-bottom:0}
-.os-tab{flex:1;padding:10px 0;text-align:center;font-size:13px;font-weight:500;
-color:#555;background:#161616;border:1px solid #2a2a2a;cursor:pointer;
-transition:all .15s;user-select:none}
-.os-tab:first-child{border-radius:10px 0 0 0}
-.os-tab:last-child{border-radius:0 10px 0 0}
-.os-tab+.os-tab{border-left:none}
-.os-tab:hover{color:#aaa}
-.os-tab.active{color:#f5f5f5;background:#1a1a1a;border-bottom-color:#1a1a1a}
-.os-panel{background:#1a1a1a;border:1px solid #2a2a2a;border-top:none;
-border-radius:0 0 10px 10px;padding:20px;display:none}
-.os-panel.active{display:block}
-.os-panel p{font-size:13px;color:#999;line-height:1.6;margin-bottom:12px}
-.os-panel ol{padding-left:18px;margin:0}
-.os-panel li{font-size:13px;color:#ccc;line-height:2}
-.os-panel li strong{color:#f5f5f5}
-.step-cmd{background:#111;border:1px solid #2a2a2a;border-radius:8px;
-padding:10px 14px;margin:10px 0;font-family:ui-monospace,SFMono-Regular,monospace;
-font-size:12px;color:#22c55e;word-break:break-all;line-height:1.5;
-cursor:pointer;transition:border-color .15s;position:relative}
-.step-cmd:hover{border-color:#3a3a3a}
-.step-cmd .tag{position:absolute;top:8px;right:10px;font-size:10px;
-color:#555;font-family:system-ui,sans-serif;text-transform:uppercase;
-letter-spacing:.06em}
-.divider{height:1px;background:#222;margin:28px 0}
-.foot{text-align:center;margin-top:28px}
-.foot p{font-size:11px;color:#444;line-height:1.6}
-.foot a{color:#555;text-decoration:none}
+:root {
+  --bg: #0a0a0a;
+  --surface: #141414;
+  --surface-2: #1c1c1c;
+  --border: #262626;
+  --border-focus: #404040;
+  --text: #fafafa;
+  --text-2: #a1a1a1;
+  --text-3: #737373;
+  --accent: #10b981;
+  --accent-dim: rgba(16,185,129,0.12);
+  --radius: 12px;
+  --mono: 'SF Mono', 'Cascadia Code', 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { -webkit-font-smoothing: antialiased; }
+body {
+  font-family: -apple-system, 'Inter', 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+}
+.container { width: 100%; max-width: 480px; }
+
+/* Header */
+.header { text-align: center; margin-bottom: 40px; }
+.brand { display: inline-flex; align-items: center; gap: 10px; margin-bottom: 20px; }
+.brand-icon {
+  width: 36px; height: 36px; border-radius: 10px;
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px; font-weight: 800; color: #fff;
+  box-shadow: 0 2px 12px rgba(16,185,129,0.25);
+}
+.brand-name {
+  font-size: 17px; font-weight: 700; letter-spacing: -0.02em;
+  color: var(--text);
+}
+.status-badge {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 6px 14px; border-radius: 100px;
+  background: var(--accent-dim);
+  border: 1px solid rgba(16,185,129,0.2);
+  font-size: 12px; font-weight: 600; color: var(--accent);
+  margin-bottom: 20px;
+}
+.status-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 2s ease-in-out infinite;
+}
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+.header h1 {
+  font-size: 26px; font-weight: 800; letter-spacing: -0.03em;
+  line-height: 1.2; margin-bottom: 8px;
+}
+.header p { font-size: 14px; color: var(--text-3); line-height: 1.5; }
+
+/* Proxy info card */
+.info-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 24px;
+}
+.info-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 0;
+}
+.info-row + .info-row { border-top: 1px solid var(--border); }
+.info-label { font-size: 12px; color: var(--text-3); font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; }
+.info-value {
+  font-family: var(--mono); font-size: 14px; font-weight: 600;
+  color: var(--accent); display: flex; align-items: center; gap: 8px;
+}
+.btn-copy {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 10px; border-radius: 6px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  color: var(--text-3); font-size: 11px; font-weight: 600;
+  cursor: pointer; transition: all 0.15s ease;
+  font-family: -apple-system, system-ui, sans-serif;
+}
+.btn-copy:hover { background: var(--border); color: var(--text); border-color: var(--border-focus); }
+.btn-copy:active { transform: scale(0.96); }
+.btn-copy.done { color: var(--accent); border-color: rgba(16,185,129,0.3); }
+
+/* OS tabs */
+.tabs {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 0; margin-bottom: 0;
+}
+.tab {
+  padding: 12px 0; text-align: center;
+  font-size: 13px; font-weight: 600; color: var(--text-3);
+  background: var(--surface); border: 1px solid var(--border);
+  cursor: pointer; transition: all 0.15s ease;
+  user-select: none;
+}
+.tab:first-child { border-radius: var(--radius) 0 0 0; }
+.tab:last-child { border-radius: 0 var(--radius) 0 0; }
+.tab + .tab { border-left: none; }
+.tab:hover { color: var(--text-2); background: var(--surface-2); }
+.tab.active {
+  color: var(--text); background: var(--surface-2);
+  border-bottom-color: var(--surface-2);
+}
+.tab-icon { font-size: 16px; display: block; margin-bottom: 2px; }
+
+/* Panels */
+.panel {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-top: none;
+  border-radius: 0 0 var(--radius) var(--radius);
+  padding: 24px;
+  display: none;
+}
+.panel.active { display: block; }
+.panel-title {
+  font-size: 15px; font-weight: 700; color: var(--text);
+  margin-bottom: 4px; letter-spacing: -0.01em;
+}
+.panel-desc { font-size: 13px; color: var(--text-3); line-height: 1.5; margin-bottom: 16px; }
+
+/* Action button */
+.btn-action {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%; padding: 14px 20px;
+  border-radius: 10px; border: none;
+  background: var(--accent); color: #000;
+  font-size: 14px; font-weight: 700;
+  cursor: pointer; transition: all 0.15s ease;
+  font-family: -apple-system, system-ui, sans-serif;
+}
+.btn-action:hover { background: #0ea572; transform: translateY(-1px); box-shadow: 0 4px 16px rgba(16,185,129,0.3); }
+.btn-action:active { transform: translateY(0); }
+.btn-action svg { width: 16px; height: 16px; }
+.btn-action.done { background: var(--accent-dim); color: var(--accent); }
+
+/* Steps */
+.steps { margin-top: 16px; }
+.step {
+  display: flex; gap: 12px; padding: 10px 0;
+}
+.step + .step { border-top: 1px solid rgba(255,255,255,0.04); }
+.step-num {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--surface); border: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; color: var(--text-3);
+  flex-shrink: 0; margin-top: 1px;
+}
+.step-text { font-size: 13px; color: var(--text-2); line-height: 1.5; }
+.step-text strong { color: var(--text); font-weight: 600; }
+
+/* Code block */
+.code-block {
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 8px; padding: 12px 14px; margin: 12px 0;
+  font-family: var(--mono); font-size: 12px; color: var(--accent);
+  line-height: 1.6; word-break: break-all;
+  cursor: pointer; transition: border-color 0.15s;
+  position: relative;
+}
+.code-block:hover { border-color: var(--border-focus); }
+.code-tag {
+  position: absolute; top: 8px; right: 10px;
+  font-family: -apple-system, system-ui, sans-serif;
+  font-size: 10px; font-weight: 600; color: var(--text-3);
+  text-transform: uppercase; letter-spacing: 0.06em;
+}
+
+/* Undo section */
+.undo-section {
+  margin-top: 20px; padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.undo-title { font-size: 12px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 8px; }
+
+/* Footer */
+.footer { text-align: center; margin-top: 32px; padding: 16px 0; }
+.footer p { font-size: 11px; color: var(--text-3); line-height: 1.6; }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <div class="logo">
-    <div class="logo-mark">S</div>
-    <div class="logo-text">ShareNet</div>
+<div class="container">
+
+  <div class="header">
+    <div class="brand">
+      <div class="brand-icon">S</div>
+      <span class="brand-name">ShareNet</span>
+    </div>
+    <div class="status-badge"><div class="status-dot"></div> Internet Connected</div>
+    <h1>You're Connected</h1>
+    <p>Follow the steps below to start browsing through this device's connection.</p>
   </div>
 
-  <div class="hdr">
-    <h1>Connected to ShareNet</h1>
-    <p>Set up your proxy to access the internet through this device.</p>
-    <div class="chip"><div class="dot"></div> Internet is available</div>
-  </div>
-
-  <div class="field">
-    <div class="field-label">Proxy Address</div>
-    <div class="field-addr">
-      <span>{{PROXY_ADDR}}</span>
-      <button class="copy-btn" onclick="copyText('{{PROXY_ADDR}}',this)">Copy</button>
+  <div class="info-card">
+    <div class="info-row">
+      <span class="info-label">Proxy</span>
+      <span class="info-value">
+        {{PROXY_ADDR}}
+        <button class="btn-copy" onclick="copyValue('{{PROXY_ADDR}}', this)">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M5 11H3.5A1.5 1.5 0 0 1 2 9.5v-7A1.5 1.5 0 0 1 3.5 1h7A1.5 1.5 0 0 1 12 2.5V5"/></svg>
+          Copy
+        </button>
+      </span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">Port</span>
+      <span class="info-value">{{PROXY_PORT}}</span>
     </div>
   </div>
 
   <div>
-    <div class="os-tabs">
-      <div class="os-tab active" onclick="switchOS('win',this)">Windows</div>
-      <div class="os-tab" onclick="switchOS('mac',this)">macOS</div>
-      <div class="os-tab" onclick="switchOS('lin',this)">Linux</div>
-      <div class="os-tab" onclick="switchOS('and',this)">Android</div>
-    </div>
-
-    <div class="os-panel active" id="p-win">
-      <p>One-click setup via PowerShell:</p>
-      <div class="step-cmd" onclick="copyText(this.getAttribute('data-cmd'),this)">
-        <span class="tag">Copy</span>
-        powershell -Command "Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\Internet Settings' -Name ProxyEnable -Value 1; Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\Internet Settings' -Name ProxyServer -Value '{{PROXY_ADDR}}'"
+    <div class="tabs">
+      <div class="tab active" onclick="switchTab('win', this)">
+        <span class="tab-icon">▶</span>Windows
       </div>
-      <p style="margin-top:8px">Then open <strong>Internet Options</strong> → Connections → LAN Settings to verify. This configures the system proxy for browsers and most apps.</p>
-      <div class="divider"></div>
-      <p>To undo:</p>
-      <div class="step-cmd" onclick="copyText(this.getAttribute('data-cmd'),this)">
-        <span class="tag">Copy</span>
-        powershell -Command "Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\Internet Settings' -Name ProxyEnable -Value 0"
+      <div class="tab" onclick="switchTab('mac', this)">
+        <span class="tab-icon">●</span>macOS
+      </div>
+      <div class="tab" onclick="switchTab('lin', this)">
+        <span class="tab-icon">◆</span>Linux
+      </div>
+      <div class="tab" onclick="switchTab('and', this)">
+        <span class="tab-icon">●</span>Android
       </div>
     </div>
 
-    <div class="os-panel" id="p-mac">
-      <p>One-click setup via Terminal:</p>
-      <div class="step-cmd" onclick="copyText(this.getAttribute('data-cmd'),this)">
-        <span class="tag">Copy</span>
-        networksetup -setwebproxy Wi-Fi {{PROXY_HOST}} {{PROXY_PORT}} &amp;&amp; networksetup -setsecurewebproxy Wi-Fi {{PROXY_HOST}} {{PROXY_PORT}} &amp;&amp; networksetup -setwebproxystate Wi-Fi on &amp;&amp; networksetup -setsecurewebproxystate Wi-Fi on
+    <!-- Windows -->
+    <div class="panel active" id="p-win">
+      <div class="panel-title">Windows Setup</div>
+      <div class="panel-desc">Configure your system proxy with one command.</div>
+      <button class="btn-action" onclick="runWindows()">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M0 2.4l7-1v7H0V2.4zm7.8-.9L16 0v8.5H7.8V1.5zM0 9.5h7v7l-7-1V9.5zm7.8 0H16V16l-8.2-1.1V9.5z"/></svg>
+        Configure Proxy
+      </button>
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-text">Open <strong>PowerShell</strong> as Administrator</div>
+        </div>
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-text">Paste the command and press Enter:</div>
+        </div>
       </div>
-      <p style="margin-top:8px">Paste into <strong>Terminal</strong>. You may be prompted for your Mac password.</p>
-      <div class="divider"></div>
-      <p>To undo:</p>
-      <div class="step-cmd" onclick="copyText(this.getAttribute('data-cmd'),this)">
-        <span class="tag">Copy</span>
-        networksetup -setwebproxystate Wi-Fi off &amp;&amp; networksetup -setsecurewebproxystate Wi-Fi off
+      <div class="code-block" onclick="copyCode(this)" data-cmd="powershell -Command &quot;Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyEnable -Value 1; Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyServer -Value 'http={{PROXY_ADDR}};socks={{PROXY_HOST}}:{{SOCKS_PORT}}'&quot;">
+        <span class="code-tag">Copy</span>
+        powershell -Command "Set-ItemProperty ... -Name ProxyServer -Value 'http={{PROXY_ADDR}};socks=...'"
+      </div>
+      <p class="panel-desc" style="margin-top:12px">This sets the system-wide proxy for browsers, email, and most applications.</p>
+      <div class="undo-section">
+        <div class="undo-title">Disable</div>
+        <div class="code-block" onclick="copyCode(this)" data-cmd="powershell -Command &quot;Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyEnable -Value 0&quot;">
+          <span class="code-tag">Copy</span>
+          powershell -Command "... -Name ProxyEnable -Value 0"
+        </div>
       </div>
     </div>
 
-    <div class="os-panel" id="p-lin">
-      <p>One-click setup via Terminal:</p>
-      <div class="step-cmd" onclick="copyText(this.getAttribute('data-cmd'),this)">
-        <span class="tag">Copy</span>
-        gsettings set org.gnome.system.proxy mode 'manual' &amp;&amp; gsettings set org.gnome.system.proxy.http host '{{PROXY_HOST}}' &amp;&amp; gsettings set org.gnome.system.proxy.http port {{PROXY_PORT}} &amp;&amp; gsettings set org.gnome.system.proxy.https host '{{PROXY_HOST}}' &amp;&amp; gsettings set org.gnome.system.proxy.https port {{PROXY_PORT}}
+    <!-- macOS -->
+    <div class="panel" id="p-mac">
+      <div class="panel-title">macOS Setup</div>
+      <div class="panel-desc">Configure your system proxy with one command.</div>
+      <button class="btn-action" onclick="runMac()">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M15.2 12.5c-.3.7-.6 1.3-1 1.9-.6.8-1.1 1.3-1.6 1.6-.6.4-1.3.6-2 .6-.5 0-1.1-.1-1.8-.4-.7-.3-1.3-.4-1.8-.4-.5 0-1.1.1-1.8.4C4.3 16.1 3.7 16.2 3.2 16.2c-.7 0-1.3-.2-1.9-.6C.7 15.2.2 14.7-.3 13.9c-.6-1-1-2-1.2-3.1-.2-1.2-.2-2.3 0-3.4.3-1.5.9-2.7 1.8-3.6.9-.9 2-1.3 3.2-1.3.5 0 1.2.1 2 .4.8.3 1.3.4 1.5.4.2 0 .7-.2 1.6-.5.8-.3 1.5-.4 2-.4 1.6.1 2.8.8 3.6 1.9-1.4.9-2.1 2.1-2 3.7 0 1.2.5 2.2 1.3 3 .4.4.8.7 1.3.9-.1.3-.2.6-.3.9z"/></svg>
+        Configure Proxy
+      </button>
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-text">Open <strong>Terminal</strong></div>
+        </div>
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-text">Paste the command and press Enter:</div>
+        </div>
       </div>
-      <p style="margin-top:8px">Paste into <strong>Terminal</strong>. Works for GNOME-based desktops (Ubuntu, Fedora).</p>
-      <div class="divider"></div>
-      <p>To undo:</p>
-      <div class="step-cmd" onclick="copyText(this.getAttribute('data-cmd'),this)">
-        <span class="tag">Copy</span>
-        gsettings set org.gnome.system.proxy mode 'none'
+      <div class="code-block" onclick="copyCode(this)" data-cmd="networksetup -setwebproxy Wi-Fi {{PROXY_HOST}} {{PROXY_PORT}} &amp;&amp; networksetup -setsecurewebproxy Wi-Fi {{PROXY_HOST}} {{PROXY_PORT}} &amp;&amp; networksetup -setsocksfirewallproxy Wi-Fi {{PROXY_HOST}} {{SOCKS_PORT}} &amp;&amp; networksetup -setwebproxystate Wi-Fi on &amp;&amp; networksetup -setsecurewebproxystate Wi-Fi on &amp;&amp; networksetup -setsocksfirewallproxystate Wi-Fi on">
+        <span class="code-tag">Copy</span>
+        networksetup -setwebproxy Wi-Fi {{PROXY_HOST}} {{PROXY_PORT}} &amp;&amp; ...
+      </div>
+      <p class="panel-desc" style="margin-top:12px">You may be prompted for your Mac password.</p>
+      <div class="undo-section">
+        <div class="undo-title">Disable</div>
+        <div class="code-block" onclick="copyCode(this)" data-cmd="networksetup -setwebproxystate Wi-Fi off &amp;&amp; networksetup -setsecurewebproxystate Wi-Fi off &amp;&amp; networksetup -setsocksfirewallproxystate Wi-Fi off">
+          <span class="code-tag">Copy</span>
+          networksetup -setwebproxystate Wi-Fi off &amp;&amp; ...
+        </div>
       </div>
     </div>
 
-    <div class="os-panel" id="p-and">
-      <ol>
-        <li>Open <strong>Settings</strong> → <strong>Wi-Fi</strong></li>
-        <li>Tap the connected network → <strong>Modify</strong></li>
-        <li>Advanced → <strong>Proxy</strong> → <strong>Manual</strong></li>
-        <li>Set Hostname: <strong>{{PROXY_HOST}}</strong></li>
-        <li>Set Port: <strong>{{PROXY_PORT}}</strong></li>
-        <li>Tap <strong>Save</strong></li>
-      </ol>
+    <!-- Linux -->
+    <div class="panel" id="p-lin">
+      <div class="panel-title">Linux Setup</div>
+      <div class="panel-desc">Configure your system proxy with one command.</div>
+      <button class="btn-action" onclick="runLinux()">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.6 0 0 3.6 0 8s3.6 8 8 8 8-3.6 8-8S12.4 0 8 0zm0 14.4c-3.5 0-6.4-2.9-6.4-6.4S4.5 1.6 8 1.6s6.4 2.9 6.4 6.4-2.9 6.4-6.4 6.4zM5.6 5.2l-2.4 2.8 2.4 2.8c.4.4 1 .4 1.4 0l2.4-2.8-2.4-2.8c-.4-.4-1-.4-1.4 0z"/></svg>
+        Configure Proxy
+      </button>
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-text">Open <strong>Terminal</strong></div>
+        </div>
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-text">Paste the command and press Enter:</div>
+        </div>
+      </div>
+      <div class="code-block" onclick="copyCode(this)" data-cmd="gsettings set org.gnome.system.proxy mode 'manual' &amp;&amp; gsettings set org.gnome.system.proxy.http host '{{PROXY_HOST}}' &amp;&amp; gsettings set org.gnome.system.proxy.http port {{PROXY_PORT}} &amp;&amp; gsettings set org.gnome.system.proxy.https host '{{PROXY_HOST}}' &amp;&amp; gsettings set org.gnome.system.proxy.https port {{PROXY_PORT}} &amp;&amp; gsettings set org.gnome.system.proxy.socks host '{{PROXY_HOST}}' &amp;&amp; gsettings set org.gnome.system.proxy.socks port {{SOCKS_PORT}} &amp;&amp; export http_proxy=http://{{PROXY_ADDR}} https_proxy=http://{{PROXY_ADDR}} ALL_PROXY=socks5://{{PROXY_HOST}}:{{SOCKS_PORT}}">
+        <span class="code-tag">Copy</span>
+        gsettings set org.gnome.system.proxy mode 'manual' &amp;&amp; ...
+      </div>
+      <p class="panel-desc" style="margin-top:12px">Works on GNOME desktops (Ubuntu, Fedora). Also add the <strong style="font-family:var(--mono)">export</strong> lines to your shell profile for terminal apps.</p>
+      <div class="undo-section">
+        <div class="undo-title">Disable</div>
+        <div class="code-block" onclick="copyCode(this)" data-cmd="gsettings set org.gnome.system.proxy mode 'none'">
+          <span class="code-tag">Copy</span>
+          gsettings set org.gnome.system.proxy mode 'none'
+        </div>
+      </div>
+    </div>
+
+    <!-- Android -->
+    <div class="panel" id="p-and">
+      <div class="panel-title">Android Setup</div>
+      <div class="panel-desc">Configure your Wi-Fi proxy manually.</div>
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-text">Open <strong>Settings</strong> &rarr; <strong>Wi-Fi</strong></div>
+        </div>
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-text">Long-press the connected network &rarr; <strong>Modify</strong></div>
+        </div>
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-text">Expand <strong>Advanced</strong> &rarr; Proxy &rarr; <strong>Manual</strong></div>
+        </div>
+        <div class="step">
+          <div class="step-num">4</div>
+          <div class="step-text">Hostname: <strong>{{PROXY_HOST}}</strong></div>
+        </div>
+        <div class="step">
+          <div class="step-num">5</div>
+          <div class="step-text">Port: <strong>{{PROXY_PORT}}</strong></div>
+        </div>
+        <div class="step">
+          <div class="step-num">6</div>
+          <div class="step-text">Tap <strong>Save</strong></div>
+        </div>
+      </div>
     </div>
   </div>
 
-  <div class="foot">
-    <p>To undo: disable the proxy or set mode back to Off / Automatic</p>
+  <div class="footer">
+    <p>To disable: run the undo command or set proxy mode to Off / Automatic</p>
   </div>
+
 </div>
 
 <script>
-function switchOS(os,el){
-  document.querySelectorAll('.os-panel').forEach(p=>p.classList.remove('active'));
-  document.querySelectorAll('.os-tab').forEach(t=>t.classList.remove('active'));
-  document.getElementById('p-'+os).classList.add('active');
+function switchTab(id, el) {
+  document.querySelectorAll('.panel').forEach(function(p) { p.classList.remove('active'); });
+  document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
+  document.getElementById('p-' + id).classList.add('active');
   el.classList.add('active');
 }
-function copyText(txt,el){
-  navigator.clipboard.writeText(txt).then(()=>{
-    el.classList.add('copied');
-    var orig=el.innerHTML;
-    el.innerHTML='Copied';
-    setTimeout(()=>{el.innerHTML=orig;el.classList.remove('copied')},1500);
+function copyValue(txt, el) {
+  navigator.clipboard.writeText(txt).then(function() {
+    el.classList.add('done');
+    var orig = el.innerHTML;
+    el.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 8l3.5 3.5L13 5"/></svg> Copied';
+    setTimeout(function() { el.innerHTML = orig; el.classList.remove('done'); }, 1500);
   });
+}
+function copyCode(el) {
+  var cmd = el.getAttribute('data-cmd');
+  navigator.clipboard.writeText(cmd).then(function() {
+    el.classList.add('done');
+    el.querySelector('.code-tag').textContent = 'Copied';
+    setTimeout(function() { el.classList.remove('done'); el.querySelector('.code-tag').textContent = 'Copy'; }, 1500);
+  });
+}
+function runWindows() {
+  var cmd = 'powershell -Command "Set-ItemProperty -Path \'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\' -Name ProxyEnable -Value 1; Set-ItemProperty -Path \'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\' -Name ProxyServer -Value \'http={{PROXY_ADDR}};socks={{PROXY_HOST}}:{{SOCKS_PORT}}\'"';
+  copyValue(cmd, document.querySelector('#p-win .btn-action'));
+}
+function runMac() {
+  var cmd = 'networksetup -setwebproxy Wi-Fi {{PROXY_HOST}} {{PROXY_PORT}} && networksetup -setsecurewebproxy Wi-Fi {{PROXY_HOST}} {{PROXY_PORT}} && networksetup -setsocksfirewallproxy Wi-Fi {{PROXY_HOST}} {{SOCKS_PORT}} && networksetup -setwebproxystate Wi-Fi on && networksetup -setsecurewebproxystate Wi-Fi on && networksetup -setsocksfirewallproxystate Wi-Fi on';
+  copyValue(cmd, document.querySelector('#p-mac .btn-action'));
+}
+function runLinux() {
+  var cmd = "gsettings set org.gnome.system.proxy mode 'manual' && gsettings set org.gnome.system.proxy.http host '{{PROXY_HOST}}' && gsettings set org.gnome.system.proxy.http port {{PROXY_PORT}} && gsettings set org.gnome.system.proxy.https host '{{PROXY_HOST}}' && gsettings set org.gnome.system.proxy.https port {{PROXY_PORT}} && gsettings set org.gnome.system.proxy.socks host '{{PROXY_HOST}}' && gsettings set org.gnome.system.proxy.socks port {{SOCKS_PORT}}";
+  copyValue(cmd, document.querySelector('#p-lin .btn-action'));
 }
 </script>
 </body>

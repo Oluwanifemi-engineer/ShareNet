@@ -153,7 +153,9 @@ class ShareService : Service() {
         ShareController.dispatch(ShareEvent.CapabilityDetected(capabilities.capability))
 
         // Try native hotspot first — works with ALL devices (PC, phone, tablet)
-        // without requiring proxy configuration. Falls back to Wi-Fi Direct.
+        // Strategy: try native hotspot first (NAT = all apps work automatically).
+        // If programmatic start fails, guide user to enable it manually.
+        // Fall back to Wi-Fi Direct (proxy-only, limited app support).
         val hotspot = NativeHotspotManager(this)
         nativeHotspot = hotspot
         if (hotspot.isAvailable) {
@@ -165,14 +167,14 @@ class ShareService : Service() {
                         ShareEvent.GroupCreated(ssid, password),
                     )
                     sessionPin?.let { ShareController.dispatch(ShareEvent.PinGenerated(it)) }
-                    // No proxy needed — the OS handles NAT for native hotspot.
-                    // Start DNS and relay services on the hotspot interface.
                     startRelayWithRetry(attemptsLeft = RELAY_BIND_RETRIES, host = "0.0.0.0")
                 }
 
                 override fun onHotspotFailed(reason: String) {
-                    log("native hotspot failed: $reason — falling back to Wi-Fi Direct")
-                    startWifiDirect()
+                    log("native hotspot programmatic start failed")
+                    log("Trying to detect if hotspot is already active...")
+                    // Check if the user manually enabled the hotspot
+                    detectActiveHotspot()
                 }
 
                 override fun onHotspotStopped() {
@@ -182,6 +184,87 @@ class ShareService : Service() {
         } else {
             log("native hotspot not available, using Wi-Fi Direct")
             startWifiDirect()
+        }
+    }
+
+    /**
+     * Check if the user has manually enabled the hotspot.
+     * If active, configure services on the hotspot interface.
+     * If not, open settings and guide the user.
+     */
+    private fun detectActiveHotspot() {
+        // Check for common hotspot interfaces
+        val hotspotInterfaces = listOf("ap0", "wlan1", "swlan0", "softap0")
+        var hotspotIp: String? = null
+
+        try {
+            val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
+            while (interfaces.hasMoreElements()) {
+                val iface = interfaces.nextElement()
+                val name = iface.name.lowercase()
+                if (hotspotInterfaces.any { name.contains(it) }) {
+                    // Found a hotspot interface
+                    val addrs = iface.inetAddresses
+                    while (addrs.hasMoreElements()) {
+                        val addr = addrs.nextElement()
+                        if (addr is java.net.Inet4Address && !addr.isLoopbackAddress) {
+                            hotspotIp = addr.hostAddress
+                            log("hotspot interface found: $name -> $hotspotIp")
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+
+        if (hotspotIp != null) {
+            // Hotspot is active — configure services on it
+            log("hotspot active at $hotspotIp, starting services")
+            ShareController.dispatch(
+                ShareEvent.GroupCreated("Hotspot", "Check phone settings"),
+            )
+            sessionPin?.let { ShareController.dispatch(ShareEvent.PinGenerated(it)) }
+            startProxyOnHost(hotspotIp)
+        } else {
+            // Hotspot not active — guide user to enable it
+            log("no active hotspot found, opening settings")
+            try {
+                val intent = Intent("android.settings.TETHER_SETTINGS")
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(intent)
+            } catch (_: Exception) {
+                try {
+                    val intent = Intent(android.provider.Settings.ACTION_WIFI_SETTINGS)
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    startActivity(intent)
+                } catch (_: Exception) {}
+            }
+            ShareController.dispatch(
+                ShareEvent.GroupCreated(
+                    "Enable Hotspot",
+                    "Open Settings > Hotspot > Enable with Wi-Fi Sharing",
+                ),
+            )
+            // Still start proxy on P2P as fallback
+            startWifiDirect()
+        }
+    }
+
+    private fun startProxyOnHost(host: String) {
+        val candidate = HttpProxyServer(
+            bindHost = host,
+            port = PROXY_PORT,
+            stats = stats,
+            captivePortalEnabled = true,
+        ) { msg -> log("proxy: $msg") }
+        try {
+            candidate.start()
+            proxy = candidate
+            ShareController.dispatch(ShareEvent.ProxyStarted(host, candidate.boundPort))
+            startSocks5(host)
+            startTicker()
+            refreshNotification()
+        } catch (e: ProxyBindException) {
+            log("proxy bind failed on $host: ${e.message}")
         }
     }
 

@@ -199,6 +199,7 @@ class Socks5ProxyServer(
         try {
             origin.connect(InetSocketAddress(destHost, destPort), CONNECT_TIMEOUT_MS)
             origin.soTimeout = IDLE_TIMEOUT_MS
+            origin.tcpNoDelay = true
             sendReply(output, REP_SUCCESS, origin.localAddress)
 
             // Bidirectional pump
@@ -378,7 +379,8 @@ class Socks5ProxyServer(
         } catch (_: Exception) {
         } finally {
             done.set(true)
-            runCatching { to.close() }
+            // Do NOT close 'to' here — the other thread may still be reading from it.
+            // The caller closes the socket after both threads finish.
         }
     }
 

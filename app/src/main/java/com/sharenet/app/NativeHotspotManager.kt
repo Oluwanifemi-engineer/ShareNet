@@ -66,19 +66,24 @@ class NativeHotspotManager(
             // Method not available on this device
         }
 
-        // Samsung devices with Android 13+ typically support Wi-Fi Sharing
+        // Samsung devices with Android 10+ support Wi-Fi Sharing
         val manufacturer = Build.MANUFACTURER.lowercase()
-        val model = Build.MODEL.lowercase()
-        if (manufacturer == "samsung" && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        if (manufacturer == "samsung" && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             return@lazy true
         }
 
-        // Pixel 6+ and other recent devices
-        if (manufacturer == "google" && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        // Pixel devices with Android 10+
+        if (manufacturer == "google" && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             return@lazy true
         }
 
-        // Default: assume not supported unless proven otherwise
+        // Most Android 10+ devices support STA+AP in hardware
+        // Even if the hidden API isn't available, the system hotspot
+        // may support Wi-Fi Sharing. Try it and fall back gracefully.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            return@lazy true
+        }
+
         false
     }
 
@@ -104,21 +109,36 @@ class NativeHotspotManager(
             return
         }
 
-        // Try approach 1: Hidden WifiManager API (Samsung, some OEMs)
-        if (trySetWifiApEnabled()) {
-            return
-        }
-
-        // Try approach 2: Start tethering via reflection
+        // Try approach 1: Start tethering via reflection (Android 10+)
         if (tryStartTethering()) {
             return
         }
 
-        // Fall back: guide user to Settings
+        // Try approach 2: Hidden WifiManager API (Samsung, some OEMs)
+        if (trySetWifiApEnabled()) {
+            return
+        }
+
+        // Fall back: open hotspot settings for the user
+        try {
+            val intent = Intent("android.settings.TETHER_SETTINGS")
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+            Log.d(TAG, "Opened tether settings for user")
+        } catch (_: Exception) {
+            // Fallback: try generic WiFi settings
+            try {
+                val intent = Intent(android.provider.Settings.ACTION_WIFI_SETTINGS)
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(intent)
+            } catch (_: Exception) {}
+        }
         listener.onHotspotFailed(
-            "Please enable the hotspot manually:\n" +
-            "Settings → Connections → Mobile Hotspot and Tethering → Mobile Hotspot\n" +
-            "Then enable 'Wi-Fi Sharing' if available."
+            "Please enable Mobile Hotspot with Wi-Fi Sharing:\n" +
+            "1. Tap the notification above to open Hotspot settings\n" +
+            "2. Enable Mobile Hotspot\n" +
+            "3. Enable 'Wi-Fi Sharing' if available\n" +
+            "4. Then tap Start Sharing again"
         )
     }
 
@@ -181,18 +201,79 @@ class NativeHotspotManager(
     private fun tryStartTethering(): Boolean {
         return try {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            val method: Method = cm.javaClass.getMethod(
-                "startTethering",
-                Int::class.javaPrimitiveType,
-                Boolean::class.javaPrimitiveType,
-                Class.forName("android.net.ConnectivityManager\$OnStartTetheringCallback"),
-            )
-            // This is complex and device-specific; just return false for now
-            // The actual tethering callback would need to be implemented
-            false
+            // Check if tethering is supported at all
+            val isSupported = try {
+                val m = cm.javaClass.getMethod("isTetheringSupported")
+                m.invoke(cm) as? Boolean ?: false
+            } catch (_: Exception) { false }
+
+            if (!isSupported) {
+                Log.d(TAG, "tethering not supported on this device")
+                return false
+            }
+
+            // Get the tethering type for WiFi (type 0 = TETHERING_WIFI)
+            val callbackClass = try {
+                Class.forName("android.net.ConnectivityManager\$OnStartTetheringCallback")
+            } catch (_: Exception) { null }
+
+            if (callbackClass != null) {
+                val proxy = java.lang.reflect.Proxy.newProxyInstance(
+                    callbackClass.classLoader,
+                    arrayOf(callbackClass)
+                ) { _, method, _ ->
+                    when (method.name) {
+                        "onTetheringStarted" -> {
+                            Log.d(TAG, "tethering started callback")
+                            started = true
+                            // Get SSID/password from system settings
+                            readHotspotConfig()
+                            registerReceiver()
+                            listener?.onHotspotStarted(hotspotSsid ?: "ShareNet", hotspotPassword ?: "")
+                        }
+                        "onTetheringFailed" -> {
+                            Log.d(TAG, "tethering failed callback")
+                        }
+                        else -> null
+                    }
+                }
+                val method = cm.javaClass.getMethod(
+                    "startTethering",
+                    Int::class.javaPrimitiveType,
+                    Boolean::class.javaPrimitiveType,
+                    callbackClass,
+                )
+                method.invoke(cm, 0, false, proxy)
+                Log.d(TAG, "startTethering invoked")
+                true
+            } else {
+                false
+            }
         } catch (e: Exception) {
             Log.d(TAG, "startTethering not available: ${e.message}")
             false
+        }
+    }
+
+    /**
+     * Read the hotspot SSID and password from system settings
+     * after tethering has been started by the system.
+     */
+    private fun readHotspotConfig() {
+        try {
+            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            val method = wifiManager.javaClass.getMethod("getWifiApConfiguration")
+            val config = method.invoke(wifiManager) as? android.net.wifi.WifiConfiguration
+            if (config != null) {
+                hotspotSsid = config.SSID?.removeSurrounding("\"") ?: "ShareNet-${Build.MODEL.take(8)}"
+                hotspotPassword = config.preSharedKey ?: ""
+            } else {
+                hotspotSsid = "ShareNet-${Build.MODEL.take(8)}"
+                hotspotPassword = ""
+            }
+        } catch (_: Exception) {
+            hotspotSsid = "ShareNet-${Build.MODEL.take(8)}"
+            hotspotPassword = ""
         }
     }
 
