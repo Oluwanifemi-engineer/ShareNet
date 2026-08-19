@@ -17,6 +17,97 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.SynchronousQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * Per-IP rate limiter: tracks connection counts and rejects excess connections.
+ * Prevents a single client from monopolizing the proxy.
+ */
+class RateLimiter(
+    private val maxConnectionsPerIp: Int = MAX_PER_IP,
+    private val maxTotalConnections: Int = MAX_CONNECTIONS,
+    private val log: (String) -> Unit = {},
+) {
+    private val perIpCount = ConcurrentHashMap<String, AtomicLong>()
+    private val totalActive = AtomicLong(0)
+
+    /** Try to acquire a connection slot. Returns true if allowed, false if rate-limited. */
+    fun tryAcquire(clientIp: String): Boolean {
+        // Check total connections
+        if (totalActive.get() >= maxTotalConnections) {
+            log("rate limit: total connections ${totalActive.get()} >= $maxTotalConnections")
+            return false
+        }
+        // Check per-IP connections
+        val count = perIpCount.getOrPut(clientIp) { AtomicLong(0) }
+        if (count.get() >= maxConnectionsPerIp) {
+            log("rate limit: $clientIp has ${count.get()} connections >= $maxConnectionsPerIp")
+            return false
+        }
+        count.incrementAndGet()
+        totalActive.incrementAndGet()
+        return true
+    }
+
+    /** Release a connection slot when the client disconnects. */
+    fun release(clientIp: String) {
+        perIpCount[clientIp]?.decrementAndGet()
+        totalActive.decrementAndGet()
+    }
+
+    /** Get current stats for monitoring. */
+    fun snapshot(): RateLimitStats = RateLimitStats(
+        totalActive = totalActive.get(),
+        perIpCounts = perIpCount.mapValues { it.value.get() }.toMap(),
+    )
+
+    companion object {
+        const val MAX_PER_IP = 16
+        const val MAX_CONNECTIONS = 64
+    }
+}
+
+data class RateLimitStats(
+    val totalActive: Long,
+    val perIpCounts: Map<String, Long>,
+)
+
+/**
+ * Structured connection logger for debugging and monitoring.
+ * Logs connection events with timestamps, client IPs, and request details.
+ */
+class ConnectionLogger(private val log: (String) -> Unit) {
+
+    fun onConnectionAccepted(clientIp: String) {
+        log("conn+ $clientIp")
+    }
+
+    fun onConnectionClosed(clientIp: String, bytesUp: Long, bytesDown: Long, durationMs: Long) {
+        log("conn- $clientIp up=${formatBytes(bytesUp)} down=${formatBytes(bytesDown)} ${durationMs}ms")
+    }
+
+    fun onRequest(clientIp: String, method: String, host: String, port: Int) {
+        log("req $clientIp $method $host:$port")
+    }
+
+    fun onConnectTunnel(clientIp: String, target: String, port: Int) {
+        log("tunnel $clientIp -> $target:$port")
+    }
+
+    fun onError(clientIp: String, error: String) {
+        log("err $clientIp $error")
+    }
+
+    fun onRateLimited(clientIp: String) {
+        log("blocked $clientIp (rate limit)")
+    }
+
+    private fun formatBytes(bytes: Long): String = when {
+        bytes >= 1_048_576 -> "${bytes / 1_048_576}MB"
+        bytes >= 1024 -> "${bytes / 1024}KB"
+        else -> "${bytes}B"
+    }
+}
 
 /**
  * A small, dependency-free HTTP proxy server — the heart of ShareNet.
@@ -50,6 +141,8 @@ class HttpProxyServer(
     private var acceptSocket: ServerSocket? = null
     private var captivePortalSocket: ServerSocket? = null
     private val clientSockets: MutableSet<Socket> = Collections.synchronizedSet(mutableSetOf())
+    private val rateLimiter = RateLimiter(log = log)
+    private val connLogger = ConnectionLogger(log)
 
     private val executor = ThreadPoolExecutor(
         0,
@@ -114,15 +207,28 @@ class HttpProxyServer(
                     runCatching { socket.close() }
                     break
                 }
+                val clientIp = socket.inetAddress?.hostAddress ?: "unknown"
+
+                // Rate limiting: reject excess connections per IP
+                if (!rateLimiter.tryAcquire(clientIp)) {
+                    connLogger.onRateLimited(clientIp)
+                    stats.connectionsRejected.incrementAndGet()
+                    runCatching { socket.close() }
+                    continue
+                }
+
                 stats.connectionsAccepted.incrementAndGet()
                 stats.activeConnections.incrementAndGet()
                 clientSockets.add(socket)
+                connLogger.onConnectionAccepted(clientIp)
+
                 try {
                     executor.execute { handleClient(socket) }
                 } catch (e: RejectedExecutionException) {
                     runCatching { socket.close() }
                     clientSockets.remove(socket)
                     stats.activeConnections.decrementAndGet()
+                    rateLimiter.release(clientIp)
                 }
             } catch (e: IOException) {
                 if (running.get()) log("accept failed: ${e.message}")
@@ -172,6 +278,10 @@ class HttpProxyServer(
     private val socks5Handler = Socks5InlineHandler(stats, destinationPolicy) { log("socks5: $it") }
 
     private fun handleClient(socket: Socket) {
+        val clientIp = socket.inetAddress?.hostAddress ?: "unknown"
+        val startTime = System.currentTimeMillis()
+        var bytesUp = 0L
+        var bytesDown = 0L
         try {
             socket.soTimeout = IDLE_TIMEOUT_MS
             socket.tcpNoDelay = true
@@ -191,11 +301,16 @@ class HttpProxyServer(
             // HTTP protocol — reconstruct by wrapping first byte back
             val wrappedInput = FirstByteInputStream(firstByte, input)
             serve(wrappedInput, output)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            if (running.get()) connLogger.onError(clientIp, e.message ?: "unknown")
         } finally {
+            val duration = System.currentTimeMillis() - startTime
+            val snapshot = stats.snapshot()
+            connLogger.onConnectionClosed(clientIp, snapshot.bytesFromClients, snapshot.bytesToClients, duration)
             runCatching { socket.close() }
             clientSockets.remove(socket)
             stats.activeConnections.decrementAndGet()
+            rateLimiter.release(clientIp)
         }
     }
 
@@ -208,8 +323,10 @@ class HttpProxyServer(
                 writeSimpleResponse(output, 400, "Bad Request")
                 return
             }
+            connLogger.onRequest("client", request.method, request.host, request.port)
             when (request.kind) {
                 RequestKind.CONNECT -> {
+                    connLogger.onConnectTunnel("client", request.host, request.port)
                     handleConnect(request, input, output)
                     return
                 }

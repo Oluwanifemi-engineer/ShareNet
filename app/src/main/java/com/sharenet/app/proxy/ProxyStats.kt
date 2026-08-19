@@ -9,6 +9,7 @@ import java.util.concurrent.atomic.AtomicLong
  */
 class ProxyStats {
     val connectionsAccepted = AtomicLong(0)
+    val connectionsRejected = AtomicLong(0)
     val bytesFromClients = AtomicLong(0) // client -> internet
     val bytesToClients = AtomicLong(0)   // internet -> client
 
@@ -16,6 +17,7 @@ class ProxyStats {
 
     fun snapshot(): StatsSnapshot = StatsSnapshot(
         connectionsAccepted = connectionsAccepted.get(),
+        connectionsRejected = connectionsRejected.get(),
         bytesFromClients = bytesFromClients.get(),
         bytesToClients = bytesToClients.get(),
         activeConnections = activeConnections.get(),
@@ -24,6 +26,7 @@ class ProxyStats {
 
 data class StatsSnapshot(
     val connectionsAccepted: Long,
+    val connectionsRejected: Long,
     val bytesFromClients: Long,
     val bytesToClients: Long,
     val activeConnections: Int,
