@@ -42,6 +42,7 @@ class HttpProxyServer(
     private val stats: ProxyStats,
     private val destinationPolicy: DestinationPolicy = DestinationPolicy.STRICT,
     private val captivePortalEnabled: Boolean = false,
+    private val hotspotMode: Boolean = false,
     private val log: (String) -> Unit = {},
 ) {
 
@@ -285,6 +286,7 @@ class HttpProxyServer(
             .replace("{{PAC_URL}}", pacUrl)
             .replace("{{PROXY_HOST}}", proxyAddr.substringBefore(':'))
             .replace("{{PROXY_PORT}}", proxyAddr.substringAfter(':'))
+            .replace("{{HOTSPOT_MODE}}", if (hotspotMode) "true" else "false")
         val body = html.toByteArray(Charsets.UTF_8)
         runCatching {
             output.write("HTTP/1.1 200 OK\r\n".toByteArray(Charsets.ISO_8859_1))
@@ -929,9 +931,21 @@ body {
       <span class="brand-name">ShareNet</span>
     </div>
     <div class="status-badge"><div class="status-dot"></div> Internet Connected</div>
-    <h1>You're Connected</h1>
-    <p>Follow the steps below to start browsing through this device's connection.</p>
-  </div>    <div class="info-card">
+    <h1 id="heroTitle">You're Connected</h1>
+    <p id="heroDesc">Follow the steps below to start browsing through this device's connection.</p>
+  </div>
+
+  <div id="hotspotBanner" style="display:none; background: linear-gradient(135deg, rgba(16,185,129,0.15) 0%, rgba(5,150,105,0.08) 100%); border: 1px solid rgba(16,185,129,0.3); border-radius: var(--radius); padding: 20px; margin-bottom: 24px; text-align: center;">
+    <div style="font-size: 36px; margin-bottom: 8px;">&#10003;</div>
+    <div style="font-size: 18px; font-weight: 700; color: var(--accent); margin-bottom: 8px;">All Apps Work</div>
+    <div style="font-size: 13px; color: var(--text-2); line-height: 1.6;">This phone is sharing internet via <strong>Wi-Fi Hotspot</strong>.<br>All your apps work automatically — no setup needed.</div>
+    <div style="margin-top: 12px; padding: 10px; background: var(--surface); border-radius: 8px; font-size: 12px; color: var(--text-3);">
+      Just use the internet normally. WhatsApp, browsers, games — everything works.
+    </div>
+  </div>
+
+  <div id="proxySection">
+  <div class="info-card">
     <div class="info-row">
       <span class="info-label">Proxy</span>
       <span class="info-value">
@@ -1093,9 +1107,18 @@ body {
     <p>To disable: run the undo command or set proxy mode to Off / Automatic</p>
   </div>
 
+  </div> <!-- end proxySection -->
+
 </div>
 
 <script>
+// Hotspot mode detection
+if ('{{HOTSPOT_MODE}}' === 'true') {
+  document.getElementById('hotspotBanner').style.display = 'block';
+  document.getElementById('proxySection').style.display = 'none';
+  document.getElementById('heroTitle').textContent = 'You\'re Connected';
+  document.getElementById('heroDesc').textContent = 'Internet is shared via Wi-Fi Hotspot.';
+}
 function switchTab(id, el) {
   document.querySelectorAll('.panel').forEach(function(p) { p.classList.remove('active'); });
   document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });

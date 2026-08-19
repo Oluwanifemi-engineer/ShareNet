@@ -81,6 +81,8 @@ sealed interface ShareEvent {
     data class CapabilityDetected(
         val capability: DeviceCapabilityDetector.SharingCapability,
     ) : ShareEvent
+    /** User needs to enable hotspot in Settings. */
+    data class HotspotInstructions(val message: String) : ShareEvent
 }
 
 object ShareReducer {
@@ -169,6 +171,15 @@ object ShareReducer {
         is ShareEvent.CapabilityDetected -> when (state) {
             is ShareState.Starting -> state.copy(
                 pending = state.pending?.copy(capability = event.capability),
+            )
+            else -> state
+        }
+
+        is ShareEvent.HotspotInstructions -> when (state) {
+            is ShareState.Starting -> state.copy(
+                pending = state.pending?.copy(
+                    upstream = event.message,
+                ),
             )
             else -> state
         }
