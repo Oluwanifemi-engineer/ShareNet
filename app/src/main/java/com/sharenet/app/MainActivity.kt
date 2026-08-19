@@ -54,6 +54,9 @@ class MainActivity : AppCompatActivity() {
         binding.copyProxyButton.setOnClickListener {
             copyToClipboard(binding.proxyValue.text.toString())
         }
+        binding.copySetupUrlButton.setOnClickListener {
+            copyToClipboard(binding.setupUrlValue.text.toString())
+        }
         binding.copyPinButton.setOnClickListener {
             copyToClipboard(binding.pinValue.text.toString())
         }
@@ -203,6 +206,8 @@ class MainActivity : AppCompatActivity() {
                 binding.ssidValue.text = info.ssid
                 binding.passphraseValue.text = info.passphrase
                 binding.proxyValue.text = info.proxyAddress
+                val setupUrl = "http://${info.proxyHost}:${info.proxyPort}/setup"
+                binding.setupUrlValue.text = setupUrl
                 binding.udpRelayValue.text = info.udpRelayPort?.let {
                     getString(R.string.share_udp_relay_value, info.proxyHost, it)
                 } ?: getString(R.string.share_udp_relay_none)

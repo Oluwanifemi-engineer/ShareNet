@@ -258,6 +258,45 @@
                         app:iconTint="?attr/colorOnSurfaceVariant" />
                 </LinearLayout>
 
+                <!-- Setup URL -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Setup URL"
+                            android:textColor="?attr/colorOnSurfaceVariant"
+                            android:textSize="12sp" />
+
+                        <TextView
+                            android:id="@+id/setupUrlValue"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:fontFamily="sans-serif-medium"
+                            android:textColor="?attr/colorPrimary"
+                            android:textIsSelectable="true"
+                            android:textSize="14sp" />
+                    </LinearLayout>
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/copySetupUrlButton"
+                        style="@style/Widget.ShareNet.CopyButton"
+                        android:contentDescription="@string/copy"
+                        app:icon="@drawable/ic_copy"
+                        app:iconTint="?attr/colorOnSurfaceVariant" />
+                </LinearLayout>
+
                 <!-- UDP relay -->
                 <LinearLayout
                     android:layout_width="match_parent"
