@@ -200,6 +200,8 @@ class HttpProxyServer(
     private val connLogger = ConnectionLogger(log)
     private val connectionHistory = ConnectionHistory()
     private val bannedIps = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+    private val adminSessions = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+    private var adminSessionCounter = 0L
 
     private val executor = ThreadPoolExecutor(
         0,
@@ -475,6 +477,154 @@ class HttpProxyServer(
 
     // ── Admin dashboard ─────────────────────────────────────────────────
 
+    /**
+     * Extract session token from Cookie header, or check query param.
+     * Returns true if the request is authenticated for admin access.
+     */
+    private fun isAdminAuthenticated(request: Request): Boolean {
+        // If no PIN is set, admin is open (no auth needed)
+        if (proxyAuthPin == null) return true
+        // Check query param: /admin?pin=XXXX
+        val pinParam = request.headers.firstOrNull {
+            it.first.equals("x-admin-pin", ignoreCase = true)
+        }?.second
+        if (pinParam == proxyAuthPin) return true
+        // Check Cookie header for admin session
+        val cookieHeader = request.headers.firstOrNull {
+            it.first.equals("cookie", ignoreCase = true)
+        }?.second ?: return false
+        val sessionToken = cookieHeader.split(";").map { it.trim() }
+            .firstOrNull { it.startsWith("sn_admin=") }?.substringAfter("=")
+        return sessionToken != null && sessionToken in adminSessions
+    }
+
+    /** Generate a new admin session token. */
+    private fun createAdminSession(): String {
+        val token = java.util.Base64.getEncoder().encodeToString(
+            "$adminSessionCounter-${System.currentTimeMillis()}".toByteArray()
+        )
+        adminSessionCounter++
+        adminSessions.add(token)
+        // Keep at most 20 sessions to prevent memory leak
+        if (adminSessions.size > 20) {
+            val iter = adminSessions.iterator()
+            iter.next(); iter.next() // skip first two — rough eviction
+            adminSessions.remove(iter.next())
+        }
+        return token
+    }
+
+    /** Serve the admin login page (PIN entry form). */
+    private fun serveAdminLogin(output: OutputStream) {
+        val html = ADMIN_LOGIN_HTML
+        val body = html.toByteArray(Charsets.UTF_8)
+        runCatching {
+            output.write("HTTP/1.1 200 OK\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Content-Type: text/html; charset=utf-8\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Content-Length: ${body.size}\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Connection: close\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write(body)
+            output.flush()
+        }
+    }
+
+    /**
+     * Route all admin requests. Handles auth, PIN login, and API calls.
+     * The dashboard page, /admin/live, and all /admin/api/ endpoints require auth.
+     * The login page (/admin/login) is always accessible.
+     */
+    private fun handleAdminRequest(request: Request, output: OutputStream, host: String, port: Int, lowerPath: String) {
+        // Login page and PIN verification — always accessible
+        if (lowerPath == "/admin/login" || lowerPath.endsWith("/admin/login")) {
+            serveAdminLogin(output)
+            return
+        }
+        // Logout — clear session
+        if (lowerPath == "/admin/logout" || lowerPath.endsWith("/admin/logout")) {
+            val cookieHeader = request.headers.firstOrNull { it.first.equals("cookie", ignoreCase = true) }?.second
+            val token = cookieHeader?.split(";")?.map { it.trim() }?.firstOrNull { it.startsWith("sn_admin=") }?.substringAfter("=")
+            if (token != null) adminSessions.remove(token)
+            val body = "<html><head><meta http-equiv=\"refresh\" content=\"0;url=/admin/login\"></head><body></body></html>".toByteArray(Charsets.UTF_8)
+            runCatching {
+                output.write("HTTP/1.1 200 OK\r\n".toByteArray(Charsets.ISO_8859_1))
+                output.write("Set-Cookie: sn_admin=; Path=/admin; Max-Age=0\r\n".toByteArray(Charsets.ISO_8859_1))
+                output.write("Content-Type: text/html\r\n".toByteArray(Charsets.ISO_8859_1))
+                output.write("Content-Length: ${body.size}\r\n".toByteArray(Charsets.ISO_8859_1))
+                output.write("Connection: close\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
+                output.write(body)
+                output.flush()
+            }
+            return
+        }
+        // Check for PIN form submission in query string: /admin?pin=XXXX&login=1
+        val pathAndQuery = request.path
+        val qsPin = if (pathAndQuery.contains("?")) {
+            pathAndQuery.substringAfter("?").split("&").map {
+                val kv = it.split("=", limit = 2)
+                if (kv.size == 2 && kv[0] == "pin") kv[1] else null
+            }.firstOrNull()
+        } else null
+        val isLoginSubmit = pathAndQuery.contains("login=1")
+        if (isLoginSubmit && qsPin != null && qsPin == proxyAuthPin && proxyAuthPin != null) {
+            // Valid PIN — create session, redirect to /admin
+            val token = createAdminSession()
+            val redirect = "http://$host:$port/admin"
+            val body = "<html><head><meta http-equiv=\"refresh\" content=\"0;url=$redirect\"></head><body></body></html>".toByteArray(Charsets.UTF_8)
+            runCatching {
+                output.write("HTTP/1.1 200 OK\r\n".toByteArray(Charsets.ISO_8859_1))
+                output.write("Content-Type: text/html\r\n".toByteArray(Charsets.ISO_8859_1))
+                output.write("Set-Cookie: sn_admin=$token; Path=/admin; HttpOnly\r\n".toByteArray(Charsets.ISO_8859_1))
+                output.write("Content-Length: ${body.size}\r\n".toByteArray(Charsets.ISO_8859_1))
+                output.write("Connection: close\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
+                output.write(body)
+                output.flush()
+            }
+            return
+        }
+        if (isLoginSubmit && qsPin != proxyAuthPin) {
+            // Wrong PIN — redirect back to login with error
+            val errUrl = "http://$host:$port/admin/login?error=1"
+            val body = "<html><head><meta http-equiv=\"refresh\" content=\"0;url=$errUrl\"></head><body></body></html>".toByteArray(Charsets.UTF_8)
+            runCatching {
+                output.write("HTTP/1.1 302 Found\r\n".toByteArray(Charsets.ISO_8859_1))
+                output.write("Location: $errUrl\r\n".toByteArray(Charsets.ISO_8859_1))
+                output.write("Content-Length: ${body.size}\r\n".toByteArray(Charsets.ISO_8859_1))
+                output.write("Connection: close\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
+                output.write(body)
+                output.flush()
+            }
+            return
+        }
+        // Check if authenticated
+        if (!isAdminAuthenticated(request)) {
+            serveAdminLogin(output)
+            return
+        }
+        // Authenticated — route to the correct handler
+        when {
+            lowerPath == "/admin" || lowerPath == "/admin/" || lowerPath.endsWith("/admin") -> {
+                serveAdminDashboard(output, host, port)
+            }
+            lowerPath == "/admin/live" || lowerPath.endsWith("/admin/live") -> {
+                serveAdminLiveJson(output)
+            }
+            lowerPath.startsWith("/admin/api/kick/") -> {
+                val ip = lowerPath.substringAfter("/admin/api/kick/").removeSuffix("/")
+                serveAdminKick(output, ip)
+            }
+            lowerPath.startsWith("/admin/api/ban/") -> {
+                val ip = lowerPath.substringAfter("/admin/api/ban/").removeSuffix("/")
+                serveAdminBan(output, ip)
+            }
+            lowerPath.startsWith("/admin/api/unban/") -> {
+                val ip = lowerPath.substringAfter("/admin/api/unban/").removeSuffix("/")
+                serveAdminUnban(output, ip)
+            }
+            else -> serveAdminDashboard(output, host, port)
+        }
+    }
+
+    /** Serve the admin dashboard (authenticated). */
     private fun serveAdminDashboard(output: OutputStream, host: String, port: Int) {
         val html = ADMIN_DASHBOARD_HTML
             .replace("{{PROXY_HOST}}", host)
@@ -634,23 +784,8 @@ class HttpProxyServer(
                 } else null
                 serveSpeedTest(output, sizeParam)
             }
-            lowerPath == "/admin" || lowerPath == "/admin/" || lowerPath.endsWith("/admin") -> {
-                serveAdminDashboard(output, host, portNum)
-            }
-            lowerPath == "/admin/live" || lowerPath.endsWith("/admin/live") -> {
-                serveAdminLiveJson(output)
-            }
-            lowerPath.startsWith("/admin/api/kick/") -> {
-                val ip = lowerPath.substringAfter("/admin/api/kick/").removeSuffix("/")
-                serveAdminKick(output, ip)
-            }
-            lowerPath.startsWith("/admin/api/ban/") -> {
-                val ip = lowerPath.substringAfter("/admin/api/ban/").removeSuffix("/")
-                serveAdminBan(output, ip)
-            }
-            lowerPath.startsWith("/admin/api/unban/") -> {
-                val ip = lowerPath.substringAfter("/admin/api/unban/").removeSuffix("/")
-                serveAdminUnban(output, ip)
+            lowerPath.startsWith("/admin") -> {
+                handleAdminRequest(request, output, host, portNum, lowerPath)
             }
             else -> {
                 val setupUrl = "http://$bindHost:$portNum/setup"
@@ -1848,6 +1983,56 @@ function runLinux() {
 </html>
 """.trimIndent()
 
+        private val ADMIN_LOGIN_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>ShareNet — Admin Login</title>
+<style>
+:root{--bg:#0a0a0a;--s1:#141414;--bd:#262626;--tx:#fafafa;--t3:#737373;--ac:#10b981;--ac2:rgba(16,185,129,0.12);--dn:#ef4444;--r:12px;--mono:'SF Mono','Cascadia Code',monospace}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,'Inter',system-ui,sans-serif;background:var(--bg);color:var(--tx);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+.login{width:100%;max-width:320px;text-align:center}
+.icon{width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#10b981,#059669);display:inline-flex;align-items:center;justify-content:center;font-size:24px;font-weight:800;color:#fff;margin-bottom:20px;box-shadow:0 4px 20px rgba(16,185,129,0.3)}
+h1{font-size:20px;font-weight:800;margin-bottom:6px;letter-spacing:-0.03em}
+p{font-size:13px;color:var(--t3);margin-bottom:24px}
+.field{position:relative;margin-bottom:16px}
+input{width:100%;padding:14px 16px;border-radius:10px;border:1px solid var(--bd);background:var(--s1);color:var(--tx);font-size:20px;font-weight:700;text-align:center;font-family:var(--mono);letter-spacing:0.3em;outline:none;transition:border-color 0.15s}
+input:focus{border-color:var(--ac)}
+input.error{border-color:var(--dn)}
+.btn{width:100%;padding:14px;border-radius:10px;border:none;background:var(--ac);color:#000;font-size:14px;font-weight:700;cursor:pointer;transition:all 0.15s;font-family:-apple-system,system-ui,sans-serif}
+.btn:hover{background:#0ea572;transform:translateY(-1px);box-shadow:0 4px 16px rgba(16,185,129,0.3)}
+.btn:active{transform:translateY(0)}
+.err{color:var(--dn);font-size:12px;margin-top:8px;display:none}
+.hint{font-size:11px;color:var(--t3);margin-top:16px}
+</style>
+</head>
+<body>
+<div class="login">
+  <div class="icon">S</div>
+  <h1>Admin Access</h1>
+  <p>Enter the 4-digit PIN to access the admin dashboard.</p>
+  <form method="GET" action="/admin">
+    <div class="field">
+      <input type="password" id="pin" name="pin" maxlength="4" pattern="[0-9]{4}" inputmode="numeric" autocomplete="off" placeholder="••••" autofocus>
+    </div>
+    <input type="hidden" name="login" value="1">
+    <button type="submit" class="btn">Unlock Dashboard</button>
+    <div class="err" id="errMsg">Incorrect PIN. Try again.</div>
+  </form>
+  <div class="hint">This PIN is the same as the sharing PIN shown on the phone.</div>
+</div>
+<script>
+if(window.location.search.indexOf('error=1')>=0)document.getElementById('errMsg').style.display='block';
+if(window.location.search.indexOf('login=1')>=0)document.getElementById('pin').classList.add('error');
+</script>
+</body>
+</html>
+""".trimIndent()
+
         private val ADMIN_DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html lang="en">
@@ -1899,6 +2084,7 @@ tr:last-child td{border-bottom:none}
     <div class="badge"><div class="dot"></div> Live Dashboard</div>
     <h1>ShareNet Admin</h1>
     <p>Auto-refreshes every 3 seconds</p>
+    <a href="/admin/logout" style="display:inline-block;margin-top:8px;padding:6px 16px;border-radius:8px;background:var(--dn2);border:1px solid rgba(239,68,68,0.3);color:var(--dn);font-size:11px;font-weight:600;text-decoration:none;transition:all 0.15s">Logout</a>
   </div>
 
   <div class="grid" id="stats">
@@ -1943,7 +2129,7 @@ function fmtd(b){if(b>=1073741824)return(b/1073741824).toFixed(2)+' GB';if(b>=10
 function doKick(ip){fetch('/admin/api/kick/'+ip).then(function(){poll()})}
 function doBan(ip){fetch('/admin/api/ban/'+ip).then(function(){poll()})}
 function doUnban(ip){fetch('/admin/api/unban/'+ip).then(function(){poll()})}
-function poll(){fetch('/admin/live').then(function(r){return r.json()}).then(function(d){
+function poll(){fetch('/admin/live',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){
   document.getElementById('s-up').textContent=fmtd(d.bytesUp);
   document.getElementById('s-down').textContent=fmtd(d.bytesDown);
   document.getElementById('s-active').textContent=d.activeConnections;
