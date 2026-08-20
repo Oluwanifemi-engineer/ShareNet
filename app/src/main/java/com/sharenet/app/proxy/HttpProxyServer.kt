@@ -199,6 +199,7 @@ class HttpProxyServer(
     private val rateLimiter = RateLimiter(log = log)
     private val connLogger = ConnectionLogger(log)
     private val connectionHistory = ConnectionHistory()
+    private val bannedIps = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
 
     private val executor = ThreadPoolExecutor(
         0,
@@ -264,6 +265,14 @@ class HttpProxyServer(
                     break
                 }
                 val clientIp = socket.inetAddress?.hostAddress ?: "unknown"
+
+                // Ban check: reject banned IPs immediately
+                if (clientIp in bannedIps) {
+                    connLogger.onError(clientIp, "banned")
+                    stats.connectionsRejected.incrementAndGet()
+                    runCatching { socket.close() }
+                    continue
+                }
 
                 // Rate limiting: reject excess connections per IP
                 if (!rateLimiter.tryAcquire(clientIp)) {
@@ -487,6 +496,7 @@ class HttpProxyServer(
         val recentConns = connectionHistory.recent(20)
         val rateLimitSnapshot = rateLimiter.snapshot()
 
+        val bannedJson = bannedIps.joinToString(",") { "\"$it\"" }
         val recentJson = recentConns.joinToString(",") { e ->
             "{\"ip\":\"${e.clientIp}\",\"up\":${e.bytesUp},\"down\":${e.bytesDown},\"dur\":${e.durationMs},\"ts\":${e.timestamp}}"
         }
@@ -516,6 +526,8 @@ class HttpProxyServer(
             append(topTalkersJson)
             append("]},\"recent\":[")
             append(recentJson)
+            append("],\"bannedIps\":[")
+            append(bannedJson)
             append("]}")
         }
         val body = json.toByteArray(Charsets.UTF_8)
@@ -524,6 +536,58 @@ class HttpProxyServer(
             output.write("Content-Type: application/json\r\n".toByteArray(Charsets.ISO_8859_1))
             output.write("Access-Control-Allow-Origin: *\r\n".toByteArray(Charsets.ISO_8859_1))
             output.write("Cache-Control: no-cache\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Content-Length: ${body.size}\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Connection: close\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write(body)
+            output.flush()
+        }
+    }
+
+    private fun serveAdminKick(output: OutputStream, ip: String) {
+        // Close all sockets from this IP
+        var kicked = 0
+        synchronized(clientSockets) {
+            clientSockets.filter { it.inetAddress?.hostAddress == ip }.forEach {
+                runCatching { it.close() }
+                clientSockets.remove(it)
+                stats.activeConnections.decrementAndGet()
+                rateLimiter.release(ip)
+                kicked++
+            }
+        }
+        log("admin: kicked $kicked connections from $ip")
+        serveAdminJson(output, "{\"ok\":true,\"kicked\":$kicked,\"ip\":\"$ip\"}")
+    }
+
+    private fun serveAdminBan(output: OutputStream, ip: String) {
+        bannedIps.add(ip)
+        // Also kick existing connections
+        var kicked = 0
+        synchronized(clientSockets) {
+            clientSockets.filter { it.inetAddress?.hostAddress == ip }.forEach {
+                runCatching { it.close() }
+                clientSockets.remove(it)
+                stats.activeConnections.decrementAndGet()
+                rateLimiter.release(ip)
+                kicked++
+            }
+        }
+        log("admin: banned + kicked $kicked connections from $ip")
+        serveAdminJson(output, "{\"ok\":true,\"banned\":true,\"kicked\":$kicked,\"ip\":\"$ip\"}")
+    }
+
+    private fun serveAdminUnban(output: OutputStream, ip: String) {
+        bannedIps.remove(ip)
+        log("admin: unbanned $ip")
+        serveAdminJson(output, "{\"ok\":true,\"unbanned\":true,\"ip\":\"$ip\"}")
+    }
+
+    private fun serveAdminJson(output: OutputStream, json: String) {
+        val body = json.toByteArray(Charsets.UTF_8)
+        runCatching {
+            output.write("HTTP/1.1 200 OK\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Content-Type: application/json\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Access-Control-Allow-Origin: *\r\n".toByteArray(Charsets.ISO_8859_1))
             output.write("Content-Length: ${body.size}\r\n".toByteArray(Charsets.ISO_8859_1))
             output.write("Connection: close\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
             output.write(body)
@@ -575,6 +639,18 @@ class HttpProxyServer(
             }
             lowerPath == "/admin/live" || lowerPath.endsWith("/admin/live") -> {
                 serveAdminLiveJson(output)
+            }
+            lowerPath.startsWith("/admin/api/kick/") -> {
+                val ip = lowerPath.substringAfter("/admin/api/kick/").removeSuffix("/")
+                serveAdminKick(output, ip)
+            }
+            lowerPath.startsWith("/admin/api/ban/") -> {
+                val ip = lowerPath.substringAfter("/admin/api/ban/").removeSuffix("/")
+                serveAdminBan(output, ip)
+            }
+            lowerPath.startsWith("/admin/api/unban/") -> {
+                val ip = lowerPath.substringAfter("/admin/api/unban/").removeSuffix("/")
+                serveAdminUnban(output, ip)
             }
             else -> {
                 val setupUrl = "http://$bindHost:$portNum/setup"
@@ -1864,6 +1940,9 @@ tr:last-child td{border-bottom:none}
 var _lu=0,_ld=0,_lt=Date.now();
 function fmt(b){if(b>=1048576)return(b/1048576).toFixed(1)+' MB';if(b>=1024)return(b/1024).toFixed(0)+' KB';return b+' B'}
 function fmtd(b){if(b>=1073741824)return(b/1073741824).toFixed(2)+' GB';if(b>=1048576)return(b/1048576).toFixed(1)+' MB';if(b>=1024)return(b/1024).toFixed(0)+' KB';return b+' B'}
+function doKick(ip){fetch('/admin/api/kick/'+ip).then(function(){poll()})}
+function doBan(ip){fetch('/admin/api/ban/'+ip).then(function(){poll()})}
+function doUnban(ip){fetch('/admin/api/unban/'+ip).then(function(){poll()})}
 function poll(){fetch('/admin/live').then(function(r){return r.json()}).then(function(d){
   document.getElementById('s-up').textContent=fmtd(d.bytesUp);
   document.getElementById('s-down').textContent=fmtd(d.bytesDown);
@@ -1881,10 +1960,13 @@ function poll(){fetch('/admin/live').then(function(r){return r.json()}).then(fun
   // Clients
   var chtml='';
   if(d.perIp.length>0){
-    chtml='<table><tr><th>Client IP</th><th>Connections</th><th>Activity</th></tr>';
+    chtml='<table><tr><th>Client IP</th><th>Connections</th><th>Status</th><th>Actions</th></tr>';
     d.perIp.forEach(function(c){
       var suspicious=d.abuse.suspiciousIps.indexOf(c.ip)>=0;
-      chtml+='<tr><td><span class="ip-tag'+(suspicious?' suspicious':'')+'">'+c.ip+'</span></td><td>'+c.conns+'</td><td>'+(suspicious?'<span style="color:var(--dn)">&#9888; Suspicious</span>':'<span style="color:var(--ac)">&#10003; Normal</span>')+'</td></tr>';
+      var banned=d.bannedIps.indexOf(c.ip)>=0;
+      var statusHtml=banned?'<span style="color:var(--dn)">&#128683; Banned</span>':(suspicious?'<span style="color:var(--dn)">&#9888; Suspicious</span>':'<span style="color:var(--ac)">&#10003; Normal</span>');
+      var actionHtml=banned?'<button onclick="doUnban(\''+c.ip+'\')" style="padding:3px 8px;border-radius:4px;background:var(--ac2);border:1px solid rgba(16,185,129,0.3);color:var(--ac);font-size:10px;cursor:pointer;font-weight:600">Unban</button>':'<button onclick="doKick(\''+c.ip+'\')" style="padding:3px 8px;border-radius:4px;background:var(--s2);border:1px solid var(--bd);color:var(--t3);font-size:10px;cursor:pointer;margin-right:4px;font-weight:600">Kick</button><button onclick="doBan(\''+c.ip+'\')" style="padding:3px 8px;border-radius:4px;background:var(--dn2);border:1px solid rgba(239,68,68,0.3);color:var(--dn);font-size:10px;cursor:pointer;font-weight:600">Ban</button>';
+      chtml+='<tr><td><span class="ip-tag'+(suspicious||banned?' suspicious':'')+'">'+c.ip+'</span></td><td>'+c.conns+'</td><td>'+statusHtml+'</td><td>'+actionHtml+'</td></tr>';
     });
     chtml+='</table>';
   } else { chtml='<div class="empty">No clients connected</div>'; }
