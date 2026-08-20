@@ -371,6 +371,9 @@ class HttpProxyServer(
             lowerPath == "/sharenet.json" || lowerPath.endsWith("/sharenet.json?") -> {
                 serveDiscoveryJson(output, host, portNum)
             }
+            lowerPath == "/stats.json" || lowerPath.endsWith("/stats.json?") -> {
+                serveStatsJson(output)
+            }
             else -> {
                 val setupUrl = "http://$bindHost:$portNum/setup"
                 runCatching {
@@ -386,9 +389,27 @@ class HttpProxyServer(
     }
 
     private fun servePacFile(output: OutputStream, host: String, port: Int) {
+        // Enhanced PAC: routes all traffic through the ShareNet proxy.
+        // Bypasses local/direct addresses to avoid loops.
         val pac = """
             |function FindProxyForURL(url, host) {
-            |    return "PROXY $host:$port";
+            |    // Bypass local/private addresses and the proxy itself
+            |    if (shExpMatch(host, 'localhost') ||
+            |        shExpMatch(host, '127.*') ||
+            |        shExpMatch(host, '192.168.49.*') ||
+            |        shExpMatch(host, '10.*') ||
+            |        shExpMatch(host, '172.16.*') ||
+            |        shExpMatch(host, '172.17.*') ||
+            |        shExpMatch(host, '172.18.*') ||
+            |        shExpMatch(host, '172.19.*') ||
+            |        shExpMatch(host, '172.2?.*') ||
+            |        shExpMatch(host, '172.30.*') ||
+            |        shExpMatch(host, '172.31.*') ||
+            |        shExpMatch(host, '169.254.*')) {
+            |        return 'DIRECT';
+            |    }
+            |    // Route everything else through the ShareNet proxy
+            |    return 'PROXY $host:$port';
             |}
         """.trimMargin()
         val body = pac.toByteArray(Charsets.UTF_8)
@@ -463,6 +484,36 @@ class HttpProxyServer(
             output.write("HTTP/1.1 200 OK\r\n".toByteArray(Charsets.ISO_8859_1))
             output.write("Content-Type: application/json\r\n".toByteArray(Charsets.ISO_8859_1))
             output.write("Access-Control-Allow-Origin: *\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Content-Length: ${body.size}\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Connection: close\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write(body)
+            output.flush()
+        }
+    }
+
+    /**
+     * Live stats JSON endpoint — polled by the setup page for real-time
+     * connection quality and traffic data.
+     */
+    private fun serveStatsJson(output: OutputStream) {
+        val snapshot = stats.snapshot()
+        val rateLimitSnapshot = rateLimiter.snapshot()
+        val json = buildString {
+            append('{')
+            append("\"bytesUp\":").append(snapshot.bytesFromClients).append(',')
+            append("\"bytesDown\":").append(snapshot.bytesToClients).append(',')
+            append("\"activeConnections\":").append(snapshot.activeConnections).append(',')
+            append("\"totalConnections\":").append(snapshot.connectionsAccepted).append(',')
+            append("\"rejectedConnections\":").append(snapshot.connectionsRejected).append(',')
+            append("\"rateLimitTotal\":").append(rateLimitSnapshot.totalActive)
+            append('}')
+        }
+        val body = json.toByteArray(Charsets.UTF_8)
+        runCatching {
+            output.write("HTTP/1.1 200 OK\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Content-Type: application/json\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Access-Control-Allow-Origin: *\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Cache-Control: no-cache\r\n".toByteArray(Charsets.ISO_8859_1))
             output.write("Content-Length: ${body.size}\r\n".toByteArray(Charsets.ISO_8859_1))
             output.write("Connection: close\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
             output.write(body)
@@ -1001,18 +1052,20 @@ body {
 
 /* OS tabs */
 .tabs {
-  display: grid; grid-template-columns: repeat(4, 1fr);
+  display: grid; grid-template-columns: repeat(3, 1fr);
   gap: 0; margin-bottom: 0;
 }
 .tab {
-  padding: 12px 0; text-align: center;
-  font-size: 13px; font-weight: 600; color: var(--text-3);
+  padding: 10px 0; text-align: center;
+  font-size: 12px; font-weight: 600; color: var(--text-3);
   background: var(--surface); border: 1px solid var(--border);
   cursor: pointer; transition: all 0.15s ease;
   user-select: none;
 }
 .tab:first-child { border-radius: var(--radius) 0 0 0; }
-.tab:last-child { border-radius: 0 var(--radius) 0 0; }
+.tab:nth-child(3) { border-radius: 0 var(--radius) 0 0; }
+.tab:nth-child(4) { border-radius: 0 0 0 0; }
+.tab:nth-child(6) { border-radius: 0 0 var(--radius) 0; }
 .tab + .tab { border-left: none; }
 .tab:hover { color: var(--text-2); background: var(--surface-2); }
 .tab.active {
@@ -1131,21 +1184,37 @@ body {
         </button>
       </span>
     </div>
+    <div class="info-row" style="border-top:1px solid var(--border)">
+      <span class="info-label">Status</span>
+      <span class="info-value" style="font-size:12px">
+        <span id="statsUp" style="color:var(--text-3)">↑ 0 B</span>
+        <span style="color:var(--border)">|</span>
+        <span id="statsDown" style="color:var(--text-3)">↓ 0 B</span>
+        <span style="color:var(--border)">|</span>
+        <span id="statsConns" style="color:var(--text-3)">0 active</span>
+      </span>
+    </div>
   </div>
 
   <div>
     <div class="tabs">
       <div class="tab active" onclick="switchTab('win', this)">
-        <span class="tab-icon">▶</span>Windows
+        <span class="tab-icon">⊞</span>Windows
       </div>
       <div class="tab" onclick="switchTab('mac', this)">
-        <span class="tab-icon">●</span>macOS
+        <span class="tab-icon">⌘</span>macOS
       </div>
       <div class="tab" onclick="switchTab('lin', this)">
-        <span class="tab-icon">◆</span>Linux
+        <span class="tab-icon">&#9661;</span>Linux
       </div>
       <div class="tab" onclick="switchTab('and', this)">
-        <span class="tab-icon">●</span>Android
+        <span class="tab-icon">▶</span>Android
+      </div>
+      <div class="tab" onclick="switchTab('ios', this)">
+        <span class="tab-icon">●</span>iOS
+      </div>
+      <div class="tab" onclick="switchTab('chr', this)">
+        <span class="tab-icon">◎</span>Chrome
       </div>
     </div>
 
@@ -1171,7 +1240,15 @@ body {
         <span class="code-tag">Copy</span>
         powershell -Command "Set-ItemProperty ... -Name ProxyServer -Value '{{PROXY_ADDR}}'"
       </div>
-      <p class="panel-desc" style="margin-top:12px">Works for: Chrome, Edge, Firefox, Outlook, Teams, Slack, and most desktop apps. Some apps (Discord, Steam) may need manual proxy settings in their own preferences.</p>
+      <p class="panel-desc" style="margin-top:12px">Works for: Chrome, Edge, Firefox, Outlook, Teams, Slack, and most desktop apps.</p>
+      <div style="margin-top:12px; padding:12px; background:var(--bg); border:1px solid var(--border); border-radius:8px;">
+        <div style="font-size:11px; font-weight:600; color:var(--text-3); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px;">Advanced: System-Wide (all apps)</div>
+        <div class="code-block" style="margin:0" onclick="copyCode(this)" data-cmd="netsh winhttp set proxy {{PROXY_ADDR}} &amp;&amp; powershell -Command &quot;Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyEnable -Value 1; Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyServer -Value '{{PROXY_ADDR}}'&quot;">
+          <span class="code-tag">Copy</span>
+          netsh winhttp set proxy {{PROXY_ADDR}}
+        </div>
+        <div style="font-size:11px; color:var(--text-3); margin-top:6px;">Also covers Windows Update, Store, and system services.</div>
+      </div>
       <div class="undo-section">
         <div class="undo-title">Disable</div>
         <div class="code-block" onclick="copyCode(this)" data-cmd="powershell -Command &quot;Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyEnable -Value 0&quot;">
@@ -1275,6 +1352,79 @@ body {
           <div class="step-text">Tap <strong>Save</strong></div>
         </div>
       </div>
+      <p class="panel-desc" style="margin-top:12px">Android proxy settings only affect the browser. For WhatsApp, Instagram, and other apps, download the <a href="/download" style="color:var(--accent)">ShareNet app</a> instead.</p>
+    </div>
+
+    <!-- iOS -->
+    <div class="panel" id="p-ios">
+      <div class="panel-title">iOS Setup</div>
+      <div class="panel-desc">Configure proxy on your iPhone or iPad.</div>
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-text">Open <strong>Settings</strong> &rarr; <strong>Wi-Fi</strong></div>
+        </div>
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-text">Tap the <strong>i</strong> icon next to the connected network</div>
+        </div>
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-text">Scroll down to <strong>HTTP Proxy</strong></div>
+        </div>
+        <div class="step">
+          <div class="step-num">4</div>
+          <div class="step-text">Tap <strong>Configure Proxy</strong> &rarr; <strong>Manual</strong></div>
+        </div>
+        <div class="step">
+          <div class="step-num">5</div>
+          <div class="step-text">Server: <strong>{{PROXY_HOST}}</strong><br>Port: <strong>{{PROXY_PORT}}</strong></div>
+        </div>
+        <div class="step">
+          <div class="step-num">6</div>
+          <div class="step-text">Tap <strong>Save</strong></div>
+        </div>
+      </div>
+      <p class="panel-desc" style="margin-top:12px">iOS proxy settings only affect Safari and some apps. For full-app support, install the <a href="/download" style="color:var(--accent)">ShareNet app</a>.</p>
+      <div class="undo-section">
+        <div class="undo-title">Disable</div>
+        <div class="code-block" style="cursor:default">
+          <span class="code-tag">Manual</span>
+          Settings → Wi-Fi → (i) → HTTP Proxy → Off
+        </div>
+      </div>
+    </div>
+
+    <!-- ChromeOS -->
+    <div class="panel" id="p-chr">
+      <div class="panel-title">Chromebook Setup</div>
+      <div class="panel-desc">Configure proxy in Chrome OS settings.</div>
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-text">Click the <strong>time</strong> in the bottom-right corner</div>
+        </div>
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-text">Click <strong>Settings</strong> (gear icon)</div>
+        </div>
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-text">Expand <strong>Network</strong> &rarr; <strong>Proxy</strong></div>
+        </div>
+        <div class="step">
+          <div class="step-num">4</div>
+          <div class="step-text">Click <strong>Network proxy</strong> &rarr; <strong>Manual proxy configuration</strong></div>
+        </div>
+        <div class="step">
+          <div class="step-num">5</div>
+          <div class="step-text">Web proxy: <strong>{{PROXY_HOST}}</strong> port <strong>{{PROXY_PORT}}</strong><br>HTTPS proxy: <strong>{{PROXY_HOST}}</strong> port <strong>{{PROXY_PORT}}</strong></div>
+        </div>
+        <div class="step">
+          <div class="step-num">6</div>
+          <div class="step-text">Click <strong>Save</strong></div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1307,6 +1457,32 @@ body {
 </div>
 
 <script>
+// Live stats polling
+function formatBytes(b) {
+  if (b >= 1048576) return (b/1048576).toFixed(1) + ' MB';
+  if (b >= 1024) return (b/1024).toFixed(0) + ' KB';
+  return b + ' B';
+}
+var _lastUp = 0, _lastDown = 0, _lastTime = Date.now();
+function pollStats() {
+  fetch('/stats.json').then(function(r){return r.json()}).then(function(d){
+    var now = Date.now();
+    var dt = (now - _lastTime) / 1000;
+    if (dt > 0) {
+      var upSpeed = (d.bytesUp - _lastUp) / dt;
+      var downSpeed = (d.bytesDown - _lastDown) / dt;
+      document.getElementById('statsUp').textContent = '\u2191 ' + formatBytes(d.bytesUp) + (upSpeed > 1024 ? ' (' + formatBytes(Math.round(upSpeed)) + '/s)' : '');
+      document.getElementById('statsDown').textContent = '\u2193 ' + formatBytes(d.bytesDown) + (downSpeed > 1024 ? ' (' + formatBytes(Math.round(downSpeed)) + '/s)' : '');
+    }
+    document.getElementById('statsConns').textContent = d.activeConnections + ' active';
+    _lastUp = d.bytesUp;
+    _lastDown = d.bytesDown;
+    _lastTime = now;
+  }).catch(function(){});
+}
+pollStats();
+setInterval(pollStats, 3000);
+
 // Hotspot mode detection
 if ('{{HOTSPOT_MODE}}' === 'true') {
   document.getElementById('hotspotBanner').style.display = 'block';
