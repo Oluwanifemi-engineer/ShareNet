@@ -110,6 +110,60 @@ class ConnectionLogger(private val log: (String) -> Unit) {
 }
 
 /**
+ * Ring buffer of recent connection events for abuse detection.
+ * Keeps the last 100 entries — enough to detect patterns without memory pressure.
+ */
+class ConnectionHistory(maxSize: Int = 100) {
+    private val entries = ArrayDeque<HistoryEntry>(maxSize)
+    private val maxSize = maxSize
+    private val lock = Any()
+
+    /** Record a completed connection. */
+    fun record(clientIp: String, bytesUp: Long, bytesDown: Long, durationMs: Long) {
+        synchronized(lock) {
+            if (entries.size >= maxSize) entries.removeFirst()
+            entries.addLast(HistoryEntry(clientIp, bytesUp, bytesDown, durationMs, System.currentTimeMillis()))
+        }
+    }
+
+    /** Get abuse report: IPs with excessive connections or high data usage. */
+    fun abuseReport(): AbuseReport {
+        synchronized(lock) {
+            val cutoff = System.currentTimeMillis() - 60_000L // last minute
+            val recent = entries.filter { it.timestamp > cutoff }
+            val byIp = recent.groupBy { it.clientIp }
+            val suspicious = byIp.filter { it.value.size >= 10 || it.value.sumOf { e -> e.bytesUp + e.bytesDown } > 50_000_000 }
+            return AbuseReport(
+                totalRecentConnections = recent.size,
+                suspiciousIps = suspicious.keys.toList(),
+                topTalkers = byIp.mapValues { it.value.size }.toList().sortedByDescending { it.second }.take(5),
+            )
+        }
+    }
+
+    /** Get last N entries. */
+    fun recent(n: Int = 20): List<HistoryEntry> {
+        synchronized(lock) {
+            return entries.toList().takeLast(n).reversed()
+        }
+    }
+}
+
+data class HistoryEntry(
+    val clientIp: String,
+    val bytesUp: Long,
+    val bytesDown: Long,
+    val durationMs: Long,
+    val timestamp: Long,
+)
+
+data class AbuseReport(
+    val totalRecentConnections: Int,
+    val suspiciousIps: List<String>,
+    val topTalkers: List<Pair<String, Int>>,
+)
+
+/**
  * A small, dependency-free HTTP proxy server — the heart of ShareNet.
  *
  * Clients (laptops, phones, tablets) join the phone's Wi-Fi Direct network and
@@ -134,6 +188,7 @@ class HttpProxyServer(
     private val destinationPolicy: DestinationPolicy = DestinationPolicy.STRICT,
     private val captivePortalEnabled: Boolean = false,
     private val hotspotMode: Boolean = false,
+    private val proxyAuthPin: String? = null,
     private val log: (String) -> Unit = {},
 ) {
 
@@ -143,6 +198,7 @@ class HttpProxyServer(
     private val clientSockets: MutableSet<Socket> = Collections.synchronizedSet(mutableSetOf())
     private val rateLimiter = RateLimiter(log = log)
     private val connLogger = ConnectionLogger(log)
+    private val connectionHistory = ConnectionHistory()
 
     private val executor = ThreadPoolExecutor(
         0,
@@ -307,6 +363,7 @@ class HttpProxyServer(
             val duration = System.currentTimeMillis() - startTime
             val snapshot = stats.snapshot()
             connLogger.onConnectionClosed(clientIp, snapshot.bytesFromClients, snapshot.bytesToClients, duration)
+            connectionHistory.record(clientIp, snapshot.bytesFromClients, snapshot.bytesToClients, duration)
             runCatching { socket.close() }
             clientSockets.remove(socket)
             stats.activeConnections.decrementAndGet()
@@ -323,6 +380,18 @@ class HttpProxyServer(
                 writeSimpleResponse(output, 400, "Bad Request")
                 return
             }
+            // Proxy authentication check (skip for captive portal endpoints)
+            if (proxyAuthPin != null && !isCaptivePortalPath(request.path)) {
+                val authHeader = request.headers.firstOrNull {
+                    it.first.equals("proxy-authorization", ignoreCase = true)
+                }?.second
+                if (!verifyProxyAuth(authHeader)) {
+                    connLogger.onError("client", "auth required")
+                    stats.authRejections.incrementAndGet()
+                    writeSimpleResponse(output, 407, "Proxy Authentication Required")
+                    return
+                }
+            }
             connLogger.onRequest("client", request.method, request.host, request.port)
             when (request.kind) {
                 RequestKind.CONNECT -> {
@@ -338,6 +407,59 @@ class HttpProxyServer(
                     }
                 }
             }
+        }
+    }
+
+    /** Check if a path is a captive portal endpoint (exempt from auth). */
+    private fun isCaptivePortalPath(path: String): Boolean {
+        val lower = path.lowercase()
+        return lower == "/proxy.pac" || lower.endsWith("/proxy.pac?") ||
+               lower == "/setup" || lower.endsWith("/setup?") ||
+               lower == "/download" || lower.endsWith("/download?") ||
+               lower == "/sharenet.json" || lower.endsWith("/sharenet.json?") ||
+               lower == "/stats.json" || lower.endsWith("/stats.json?")
+    }
+
+    /** Verify Proxy-Authorization header. Format: "Basic <base64(pin:)>" */
+    private fun verifyProxyAuth(header: String?): Boolean {
+        if (header == null) return false
+        if (!header.lowercase().startsWith("basic ")) return false
+        return try {
+            val decoded = java.util.Base64.getDecoder().decode(header.substring(6))
+            val credentials = String(decoded, Charsets.UTF_8)
+            // Format is "username:password" — we accept any username, just check the PIN
+            val parts = credentials.split(":", limit = 2)
+            parts.size == 2 && parts[1] == proxyAuthPin
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Serve the speed test endpoint: streams random data at maximum throughput
+     * so clients can measure actual proxy speed.
+     */
+    private fun serveSpeedTest(output: OutputStream, sizeParam: String?) {
+        val sizeBytes = sizeParam?.toLongOrNull()?.coerceIn(1024, 10_000_000) ?: 1_000_000L
+        val body = """{"size":$sizeBytes,"unit":"bytes","description":"Speed test payload"}"""
+        val header = ("HTTP/1.1 200 OK\r\n" +
+            "Content-Type: application/octet-stream\r\n" +
+            "Content-Length: $sizeBytes\r\n" +
+            "Cache-Control: no-cache\r\n" +
+            "Connection: close\r\n\r\n")
+        runCatching {
+            output.write(header.toByteArray(Charsets.ISO_8859_1))
+            output.flush()
+            // Stream random data at max speed
+            val buf = ByteArray(64 * 1024)
+            java.util.Random().nextBytes(buf)
+            var remaining = sizeBytes
+            while (remaining > 0) {
+                val chunk = buf.copyOf(minOf(buf.size, remaining.toInt()))
+                output.write(chunk)
+                remaining -= chunk.size
+            }
+            output.flush()
         }
     }
 
@@ -373,6 +495,12 @@ class HttpProxyServer(
             }
             lowerPath == "/stats.json" || lowerPath.endsWith("/stats.json?") -> {
                 serveStatsJson(output)
+            }
+            lowerPath.startsWith("/speed") -> {
+                val sizeParam = if (lowerPath.contains("?")) {
+                    lowerPath.substringAfter("size=").takeIf { it.isNotEmpty() }
+                } else null
+                serveSpeedTest(output, sizeParam)
             }
             else -> {
                 val setupUrl = "http://$bindHost:$portNum/setup"
@@ -431,6 +559,7 @@ class HttpProxyServer(
             .replace("{{PROXY_HOST}}", proxyAddr.substringBefore(':'))
             .replace("{{PROXY_PORT}}", proxyAddr.substringAfter(':'))
             .replace("{{HOTSPOT_MODE}}", if (hotspotMode) "true" else "false")
+            .replace("{{AUTH_PIN}}", proxyAuthPin ?: "")
         val body = html.toByteArray(Charsets.UTF_8)
         runCatching {
             output.write("HTTP/1.1 200 OK\r\n".toByteArray(Charsets.ISO_8859_1))
@@ -498,6 +627,15 @@ class HttpProxyServer(
     private fun serveStatsJson(output: OutputStream) {
         val snapshot = stats.snapshot()
         val rateLimitSnapshot = rateLimiter.snapshot()
+        val abuseReport = connectionHistory.abuseReport()
+        val recentConns = connectionHistory.recent(10)
+        val recentJson = recentConns.joinToString(",") { e ->
+            "{\"ip\":\"${e.clientIp}\",\"up\":${e.bytesUp},\"down\":${e.bytesDown},\"dur\":${e.durationMs}}"
+        }
+        val topTalkersJson = abuseReport.topTalkers.joinToString(",") { (ip, count) ->
+            "{\"ip\":\"$ip\",\"count\":$count}"
+        }
+        val suspiciousJson = abuseReport.suspiciousIps.joinToString(",") { "\"$it\"" }
         val json = buildString {
             append('{')
             append("\"bytesUp\":").append(snapshot.bytesFromClients).append(',')
@@ -505,8 +643,16 @@ class HttpProxyServer(
             append("\"activeConnections\":").append(snapshot.activeConnections).append(',')
             append("\"totalConnections\":").append(snapshot.connectionsAccepted).append(',')
             append("\"rejectedConnections\":").append(snapshot.connectionsRejected).append(',')
-            append("\"rateLimitTotal\":").append(rateLimitSnapshot.totalActive)
-            append('}')
+            append("\"authRejections\":").append(snapshot.authRejections).append(',')
+            append("\"rateLimitTotal\":").append(rateLimitSnapshot.totalActive).append(',')
+            append("\"abuse\":{\"recentConnections\":").append(abuseReport.totalRecentConnections).append(',')
+            append("\"suspiciousIps\":[")
+            append(suspiciousJson)
+            append("],\"topTalkers\":[")
+            append(topTalkersJson)
+            append("],\"recent\":[")
+            append(recentJson)
+            append("]}}")
         }
         val body = json.toByteArray(Charsets.UTF_8)
         runCatching {

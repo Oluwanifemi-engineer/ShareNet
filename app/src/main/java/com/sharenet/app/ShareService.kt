@@ -271,6 +271,7 @@ class ShareService : Service() {
             stats = stats,
             captivePortalEnabled = true,
             hotspotMode = true,
+            proxyAuthPin = sessionPin,
         ) { msg -> log("proxy: $msg") }
         try {
             candidate.apkContext = this
@@ -291,6 +292,7 @@ class ShareService : Service() {
                         stats = stats,
                         captivePortalEnabled = true,
                         hotspotMode = true,
+                        proxyAuthPin = sessionPin,
                     ) { msg -> log("proxy: $msg") }
                     fallback.apkContext = this
                     fallback.start()
@@ -444,6 +446,7 @@ class ShareService : Service() {
             port = PROXY_PORT,
             stats = stats,
             captivePortalEnabled = true,
+            proxyAuthPin = sessionPin,
         ) { msg -> log("proxy: $msg") }
         try {
             candidate.apkContext = this
@@ -465,6 +468,7 @@ class ShareService : Service() {
             port = PROXY_PORT,
             stats = stats,
             captivePortalEnabled = true,
+            proxyAuthPin = sessionPin,
         ) { msg ->
             log("proxy: $msg")
         }
