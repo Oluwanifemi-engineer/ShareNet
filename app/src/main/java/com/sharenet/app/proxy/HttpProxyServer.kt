@@ -417,7 +417,8 @@ class HttpProxyServer(
                lower == "/setup" || lower.endsWith("/setup?") ||
                lower == "/download" || lower.endsWith("/download?") ||
                lower == "/sharenet.json" || lower.endsWith("/sharenet.json?") ||
-               lower == "/stats.json" || lower.endsWith("/stats.json?")
+               lower == "/stats.json" || lower.endsWith("/stats.json?") ||
+               lower.startsWith("/admin")
     }
 
     /** Verify Proxy-Authorization header. Format: "Basic <base64(pin:)>" */
@@ -463,6 +464,73 @@ class HttpProxyServer(
         }
     }
 
+    // ── Admin dashboard ─────────────────────────────────────────────────
+
+    private fun serveAdminDashboard(output: OutputStream, host: String, port: Int) {
+        val html = ADMIN_DASHBOARD_HTML
+            .replace("{{PROXY_HOST}}", host)
+            .replace("{{PROXY_PORT}}", port.toString())
+        val body = html.toByteArray(Charsets.UTF_8)
+        runCatching {
+            output.write("HTTP/1.1 200 OK\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Content-Type: text/html; charset=utf-8\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Content-Length: ${body.size}\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Connection: close\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write(body)
+            output.flush()
+        }
+    }
+
+    private fun serveAdminLiveJson(output: OutputStream) {
+        val snapshot = stats.snapshot()
+        val abuseReport = connectionHistory.abuseReport()
+        val recentConns = connectionHistory.recent(20)
+        val rateLimitSnapshot = rateLimiter.snapshot()
+
+        val recentJson = recentConns.joinToString(",") { e ->
+            "{\"ip\":\"${e.clientIp}\",\"up\":${e.bytesUp},\"down\":${e.bytesDown},\"dur\":${e.durationMs},\"ts\":${e.timestamp}}"
+        }
+        val topTalkersJson = abuseReport.topTalkers.joinToString(",") { (ip, count) ->
+            "{\"ip\":\"$ip\",\"count\":$count}"
+        }
+        val suspiciousJson = abuseReport.suspiciousIps.joinToString(",") { "\"$it\"" }
+        val perIpJson = rateLimitSnapshot.perIpCounts.entries.joinToString(",") { (ip, count) ->
+            "{\"ip\":\"$ip\",\"conns\":$count}"
+        }
+
+        val json = buildString {
+            append('{')
+            append("\"bytesUp\":").append(snapshot.bytesFromClients).append(',')
+            append("\"bytesDown\":").append(snapshot.bytesToClients).append(',')
+            append("\"activeConnections\":").append(snapshot.activeConnections).append(',')
+            append("\"totalConnections\":").append(snapshot.connectionsAccepted).append(',')
+            append("\"rejectedConnections\":").append(snapshot.connectionsRejected).append(',')
+            append("\"authRejections\":").append(snapshot.authRejections).append(',')
+            append("\"rateLimitActive\":").append(rateLimitSnapshot.totalActive).append(',')
+            append("\"perIp\":[")
+            append(perIpJson)
+            append("],\"abuse\":{\"recentConnections\":").append(abuseReport.totalRecentConnections).append(',')
+            append("\"suspiciousIps\":[")
+            append(suspiciousJson)
+            append("],\"topTalkers\":[")
+            append(topTalkersJson)
+            append("]},\"recent\":[")
+            append(recentJson)
+            append("]}")
+        }
+        val body = json.toByteArray(Charsets.UTF_8)
+        runCatching {
+            output.write("HTTP/1.1 200 OK\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Content-Type: application/json\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Access-Control-Allow-Origin: *\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Cache-Control: no-cache\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Content-Length: ${body.size}\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write("Connection: close\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.write(body)
+            output.flush()
+        }
+    }
+
     // ── Captive portal ────────────────────────────────────────────────────
 
     private fun handleCaptivePortal(
@@ -501,6 +569,12 @@ class HttpProxyServer(
                     lowerPath.substringAfter("size=").takeIf { it.isNotEmpty() }
                 } else null
                 serveSpeedTest(output, sizeParam)
+            }
+            lowerPath == "/admin" || lowerPath == "/admin/" || lowerPath.endsWith("/admin") -> {
+                serveAdminDashboard(output, host, portNum)
+            }
+            lowerPath == "/admin/live" || lowerPath.endsWith("/admin/live") -> {
+                serveAdminLiveJson(output)
             }
             else -> {
                 val setupUrl = "http://$bindHost:$portNum/setup"
@@ -1693,6 +1767,152 @@ function runLinux() {
   var btn = document.querySelector('#p-lin .btn-action');
   flashButton(btn, 'Copied! Paste in Terminal');
 }
+</script>
+</body>
+</html>
+""".trimIndent()
+
+        private val ADMIN_DASHBOARD_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta http-equiv="refresh" content="3">
+<title>ShareNet — Admin</title>
+<style>
+:root { --bg:#0a0a0a; --s1:#141414; --s2:#1c1c1c; --bd:#262626; --tx:#fafafa; --t2:#a1a1a1; --t3:#737373; --ac:#10b981; --ac2:rgba(16,185,129,0.12); --dn:#ef4444; --dn2:rgba(239,68,68,0.12); --wn:#f59e0b; --wn2:rgba(245,158,11,0.12); --r:12px; --mono:'SF Mono','Cascadia Code',monospace; }
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,'Inter',system-ui,sans-serif;background:var(--bg);color:var(--tx);padding:20px 16px;min-height:100vh}
+.wrap{max-width:900px;margin:0 auto}
+.hdr{text-align:center;margin-bottom:28px}
+.hdr h1{font-size:22px;font-weight:800;letter-spacing:-0.03em}
+.hdr p{font-size:12px;color:var(--t3);margin-top:4px}
+.badge{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:100px;background:var(--ac2);border:1px solid rgba(16,185,129,0.2);font-size:11px;font-weight:600;color:var(--ac);margin-bottom:12px}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--ac);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:20px}
+.card{background:var(--s1);border:1px solid var(--bd);border-radius:var(--r);padding:16px}
+.card-label{font-size:10px;font-weight:600;color:var(--t3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px}
+.card-value{font-size:24px;font-weight:800;color:var(--tx);font-family:var(--mono);line-height:1}
+.card-sub{font-size:11px;color:var(--t3);margin-top:4px}
+.card-accent .card-value{color:var(--ac)}
+.card-danger .card-value{color:var(--dn)}
+.card-warn .card-value{color:var(--wn)}
+.section{background:var(--s1);border:1px solid var(--bd);border-radius:var(--r);padding:16px;margin-bottom:16px}
+.section-title{font-size:13px;font-weight:700;color:var(--tx);margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.section-title .icon{font-size:16px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;font-size:10px;font-weight:600;color:var(--t3);text-transform:uppercase;letter-spacing:0.06em;padding:8px 12px;border-bottom:1px solid var(--bd)}
+td{padding:8px 12px;color:var(--t2);border-bottom:1px solid rgba(255,255,255,0.03);font-family:var(--mono);font-size:12px}
+tr:last-child td{border-bottom:none}
+.ip-tag{display:inline-block;padding:2px 8px;border-radius:6px;background:var(--s2);font-size:11px;font-weight:600}
+.suspicious{background:var(--dn2);color:var(--dn)}
+.empty{text-align:center;padding:24px;color:var(--t3);font-size:13px}
+.bar-wrap{height:6px;background:var(--s2);border-radius:3px;overflow:hidden;margin-top:6px}
+.bar{height:100%;background:var(--ac);border-radius:3px;transition:width 0.3s}
+.foot{text-align:center;padding:16px 0;font-size:11px;color:var(--t3)}
+.speed-btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:8px;background:var(--ac2);border:1px solid rgba(16,185,129,0.2);color:var(--ac);font-size:12px;font-weight:600;cursor:pointer;text-decoration:none;margin-top:8px;transition:all 0.15s}
+.speed-btn:hover{background:var(--ac);color:#000}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hdr">
+    <div class="badge"><div class="dot"></div> Live Dashboard</div>
+    <h1>ShareNet Admin</h1>
+    <p>Auto-refreshes every 3 seconds</p>
+  </div>
+
+  <div class="grid" id="stats">
+    <div class="card card-accent"><div class="card-label">Total Up</div><div class="card-value" id="s-up">0 B</div></div>
+    <div class="card card-accent"><div class="card-label">Total Down</div><div class="card-value" id="s-down">0 B</div></div>
+    <div class="card"><div class="card-label">Active</div><div class="card-value" id="s-active">0</div><div class="card-sub">connections</div></div>
+    <div class="card"><div class="card-label">Total</div><div class="card-value" id="s-total">0</div><div class="card-sub">accepted</div></div>
+    <div class="card card-warn"><div class="card-label">Rejected</div><div class="card-value" id="s-rejected">0</div><div class="card-sub">rate limit</div></div>
+    <div class="card card-danger"><div class="card-label">Auth Fail</div><div class="card-value" id="s-auth">0</div><div class="card-sub">wrong PIN</div></div>
+  </div>
+
+  <div class="section">
+    <div class="section-title"><span class="icon">&#9889;</span> Traffic Speed</div>
+    <div style="display:flex;gap:20px;align-items:center">
+      <div><span style="color:var(--ac);font-weight:700;font-family:var(--mono)" id="speed-up">0 B/s</span> <span style="color:var(--t3);font-size:11px">upload</span></div>
+      <div><span style="color:var(--ac);font-weight:700;font-family:var(--mono)" id="speed-down">0 B/s</span> <span style="color:var(--t3);font-size:11px">download</span></div>
+      <a href="/speed" class="speed-btn" target="_blank">&#8594; Speed Test</a>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title"><span class="icon">&#128101;</span> Connected Clients</div>
+    <div id="clients-body"><div class="empty">No clients connected yet</div></div>
+  </div>
+
+  <div class="section">
+    <div class="section-title"><span class="icon">&#9888;</span> Abuse Detection</div>
+    <div id="abuse-body"><div class="empty">No suspicious activity</div></div>
+  </div>
+
+  <div class="section">
+    <div class="section-title"><span class="icon">&#128200;</span> Recent Connections</div>
+    <div id="history-body"><div class="empty">No connections yet</div></div>
+  </div>
+
+  <div class="foot">ShareNet Admin Dashboard</div>
+</div>
+<script>
+var _lu=0,_ld=0,_lt=Date.now();
+function fmt(b){if(b>=1048576)return(b/1048576).toFixed(1)+' MB';if(b>=1024)return(b/1024).toFixed(0)+' KB';return b+' B'}
+function fmtd(b){if(b>=1073741824)return(b/1073741824).toFixed(2)+' GB';if(b>=1048576)return(b/1048576).toFixed(1)+' MB';if(b>=1024)return(b/1024).toFixed(0)+' KB';return b+' B'}
+function poll(){fetch('/admin/live').then(function(r){return r.json()}).then(function(d){
+  document.getElementById('s-up').textContent=fmtd(d.bytesUp);
+  document.getElementById('s-down').textContent=fmtd(d.bytesDown);
+  document.getElementById('s-active').textContent=d.activeConnections;
+  document.getElementById('s-total').textContent=d.totalConnections;
+  document.getElementById('s-rejected').textContent=d.rejectedConnections;
+  document.getElementById('s-auth').textContent=d.authRejections;
+  var now=Date.now(),dt=(now-_lt)/1000;
+  if(dt>0){
+    var us=(d.bytesUp-_lu)/dt,ds=(d.bytesDown-_ld)/dt;
+    document.getElementById('speed-up').textContent=fmt(Math.round(us))+'/s';
+    document.getElementById('speed-down').textContent=fmt(Math.round(ds))+'/s';
+  }
+  _lu=d.bytesUp;_ld=d.bytesDown;_lt=now;
+  // Clients
+  var chtml='';
+  if(d.perIp.length>0){
+    chtml='<table><tr><th>Client IP</th><th>Connections</th><th>Activity</th></tr>';
+    d.perIp.forEach(function(c){
+      var suspicious=d.abuse.suspiciousIps.indexOf(c.ip)>=0;
+      chtml+='<tr><td><span class="ip-tag'+(suspicious?' suspicious':'')+'">'+c.ip+'</span></td><td>'+c.conns+'</td><td>'+(suspicious?'<span style="color:var(--dn)">&#9888; Suspicious</span>':'<span style="color:var(--ac)">&#10003; Normal</span>')+'</td></tr>';
+    });
+    chtml+='</table>';
+  } else { chtml='<div class="empty">No clients connected</div>'; }
+  document.getElementById('clients-body').innerHTML=chtml;
+  // Abuse
+  var ahtml='';
+  if(d.abuse.suspiciousIps.length>0){
+    ahtml='<table><tr><th>IP</th><th>Status</th><th>Connections (last min)</th></tr>';
+    d.abuse.topTalkers.forEach(function(t){
+      var susp=d.abuse.suspiciousIps.indexOf(t.ip)>=0;
+      ahtml+='<tr><td><span class="ip-tag'+(susp?' suspicious':'')+'">'+t.ip+'</span></td><td>'+(susp?'<span style="color:var(--dn)">&#9888; FLAGGED</span>':'OK')+'</td><td>'+t.count+'</td></tr>';
+    });
+    ahtml+='</table><div style="margin-top:8px;font-size:11px;color:var(--t3)">Abuse threshold: 10+ connections or 50MB+ in 60 seconds</div>';
+  } else { ahtml='<div class="empty">&#10003; No suspicious activity detected</div>'; }
+  document.getElementById('abuse-body').innerHTML=ahtml;
+  // History
+  var hhtml='';
+  if(d.recent.length>0){
+    hhtml='<table><tr><th>IP</th><th>Up</th><th>Down</th><th>Duration</th></tr>';
+    d.recent.forEach(function(h){
+      hhtml+='<tr><td><span class="ip-tag">'+h.ip+'</span></td><td>'+fmt(h.up)+'</td><td>'+fmt(h.down)+'</td><td>'+(h.dur/1000).toFixed(1)+'s</td></tr>';
+    });
+    hhtml+='</table>';
+  } else { hhtml='<div class="empty">No connections yet</div>'; }
+  document.getElementById('history-body').innerHTML=hhtml;
+}).catch(function(){})}
+poll();
+setInterval(poll,3000);
 </script>
 </body>
 </html>
